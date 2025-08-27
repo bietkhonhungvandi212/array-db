@@ -2,12 +2,15 @@ package page
 
 import (
 	"encoding/binary"
+	"errors"
 
 	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
 )
 
 const (
 	HEADER_SIZE = 16 // Size of PageHeader struct: PageID(8) + Checksum(4) + Flags(2) + padding(2)
+	DIRTY_FLAG  = 1 << 0
+	PINNED_FLAG = 1 << 1
 )
 
 // Page is block that read/write from disk
@@ -40,4 +43,36 @@ func (p *Page) Serialize() []byte {
 // Deserialize unpacks from bytes, validates checksum
 func Deserialize(data []byte) (*Page, error) {
 	return nil, nil
+}
+
+func (p *PageHeader) SetDirtyFlag() {
+	p.Flags |= DIRTY_FLAG
+}
+
+func (p *PageHeader) ClearDirtyFlag() error {
+	if p.Flags&DIRTY_FLAG == 0 {
+		return errors.New("page is not dirty")
+	}
+	p.Flags &^= DIRTY_FLAG
+	return nil
+}
+
+func (p *PageHeader) IsDirty() bool {
+	return p.Flags&DIRTY_FLAG != 0
+}
+
+func (p *PageHeader) SetPinnedFlag() {
+	p.Flags |= PINNED_FLAG
+}
+
+func (p *PageHeader) ClearPinnedFlag() error {
+	if p.Flags&PINNED_FLAG == 0 {
+		return errors.New("page is not pinned")
+	}
+	p.Flags &^= PINNED_FLAG
+	return nil
+}
+
+func (p *PageHeader) IsPinned() bool {
+	return p.Flags&PINNED_FLAG != 0
 }
