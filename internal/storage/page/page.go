@@ -37,11 +37,11 @@ func (p *Page) Serialize() []byte {
 	copy(buf[HEADER_SIZE:], p.Data[:])
 
 	// Calculate checksum over PageID + Flags + Data (excluding checksum field)
-	checkSumByte := make([]byte, 0)
-	checkSumByte = append(checkSumByte, buf[0:8]...)
-	checkSumByte = append(checkSumByte, buf[12:]...)
+	checksumByte := make([]byte, 0)
+	checksumByte = append(checksumByte, buf[0:8]...)
+	checksumByte = append(checksumByte, buf[12:]...)
 
-	checksum := crc32.ChecksumIEEE(checkSumByte)
+	checksum := crc32.ChecksumIEEE(checksumByte)
 	binary.LittleEndian.PutUint32(buf[8:12], checksum)
 
 	return buf
@@ -49,7 +49,31 @@ func (p *Page) Serialize() []byte {
 
 // Deserialize unpacks from bytes, validates checksum
 func Deserialize(data []byte) (*Page, error) {
-	return nil, nil
+	if len(data) != util.PageSize {
+		return nil, errors.New("Invalid Page Size")
+	}
+
+	// stored Checksum
+	pageChecksum := binary.LittleEndian.Uint32(data[8:12])
+
+	// calculated Checksum
+	checksumByte := make([]byte, 0)
+	checksumByte = append(checksumByte, data[0:8]...)
+	checksumByte = append(checksumByte, data[12:]...)
+	checksum := crc32.ChecksumIEEE(checksumByte)
+
+	if checksum != pageChecksum {
+		return nil, errors.New("Mismatch deserialized checksum ")
+	}
+
+	var page Page
+	page.Header.PageID = util.PageID(binary.LittleEndian.Uint64(data[0:8]))
+	page.Header.Checksum = checksum
+	page.Header.Flags = binary.LittleEndian.Uint16(data[12:14])
+
+	copy(page.Data[:], data[HEADER_SIZE:])
+
+	return &page, nil
 }
 
 func (p *PageHeader) SetDirtyFlag() {

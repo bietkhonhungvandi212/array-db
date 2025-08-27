@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/page"
 )
@@ -21,4 +22,19 @@ func main() {
 
 	fmt.Printf("Serialized page: %d bytes, PageID=%d, Dirty=%v, Pinned=%v\n",
 		len(data), p.Header.PageID, p.Header.IsDirty(), p.Header.IsPinned())
+
+	newPage, err := page.Deserialize(data)
+	if err != nil {
+		log.Fatalf("Deserialize: %v", err)
+	}
+
+	fmt.Printf("Deserialized: PageID=%d, Data[:10]=%s\n",
+		newPage.Header.PageID, newPage.Data[:10])
+
+	// Test corruption
+	dataCorrupt := make([]byte, len(data))
+	copy(dataCorrupt, data)
+	dataCorrupt[page.HEADER_SIZE] ^= 0xFF
+	_, err = page.Deserialize(dataCorrupt)
+	fmt.Printf("Corrupted data test: %v\n", err)
 }

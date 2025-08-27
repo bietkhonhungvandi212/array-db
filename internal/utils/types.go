@@ -8,7 +8,7 @@ import (
 // PageID represents a unique page identifier
 type PageID uint64
 
-// PageSize represents the standard page size (4KB)
+// PageSize represents the standard page size (4KB) - > 4096 bytes
 const PageSize = 4096
 
 // TransactionID represents a unique transaction identifier
