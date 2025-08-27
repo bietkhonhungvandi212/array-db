@@ -3,6 +3,7 @@ package page
 import (
 	"encoding/binary"
 	"errors"
+	"hash/crc32"
 
 	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
 )
@@ -35,7 +36,8 @@ func (p *Page) Serialize() []byte {
 
 	copy(buf[HEADER_SIZE:], p.Data[:])
 
-	//TODO: Calculate checksum
+	checkSum := crc32.ChecksumIEEE(append(buf[0:8], buf[12:]...))
+	binary.LittleEndian.PutUint32(buf[8:12], checkSum)
 
 	return nil
 }
