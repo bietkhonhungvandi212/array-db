@@ -30,20 +30,18 @@ type PageHeader struct {
 // Serialize packs the page into a byte slice for writing
 func (p *Page) Serialize() []byte {
 	buf := make([]byte, util.PageSize)
+	// Write header fields
 	binary.LittleEndian.PutUint64(buf[0:8], uint64(p.Header.PageID))
-	binary.LittleEndian.PutUint16(buf[12:14], uint16(p.Header.Flags))
-
-	// Copy data
+	binary.LittleEndian.PutUint16(buf[12:14], p.Header.Flags)
+	binary.LittleEndian.PutUint16(buf[14:16], 0) // Padding
+	// Write data
 	copy(buf[HEADER_SIZE:], p.Data[:])
-
-	// Calculate checksum over PageID + Flags + Data (excluding checksum field)
-	checksumByte := make([]byte, 0)
-	checksumByte = append(checksumByte, buf[0:8]...)
-	checksumByte = append(checksumByte, buf[12:]...)
-
-	checksum := crc32.ChecksumIEEE(checksumByte)
-	binary.LittleEndian.PutUint32(buf[8:12], checksum)
-
+	// Compute checksum over PageID + Flags + Data (excluding checksum field)
+	h := crc32.NewIEEE()
+	h.Write(buf[0:8])
+	h.Write(buf[12:])
+	p.Header.Checksum = h.Sum32()
+	binary.LittleEndian.PutUint32(buf[8:12], p.Header.Checksum)
 	return buf
 }
 
