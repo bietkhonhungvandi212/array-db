@@ -31,15 +31,20 @@ type PageHeader struct {
 func (p *Page) Serialize() []byte {
 	buf := make([]byte, util.PageSize)
 	binary.LittleEndian.PutUint64(buf[0:8], uint64(p.Header.PageID))
-	binary.LittleEndian.PutUint32(buf[8:12], uint32(p.Header.Checksum))
 	binary.LittleEndian.PutUint16(buf[12:14], uint16(p.Header.Flags))
 
+	// Copy data
 	copy(buf[HEADER_SIZE:], p.Data[:])
 
-	checkSum := crc32.ChecksumIEEE(append(buf[0:8], buf[12:]...))
-	binary.LittleEndian.PutUint32(buf[8:12], checkSum)
+	// Calculate checksum over PageID + Flags + Data (excluding checksum field)
+	checkSumByte := make([]byte, 0)
+	checkSumByte = append(checkSumByte, buf[0:8]...)
+	checkSumByte = append(checkSumByte, buf[12:]...)
 
-	return nil
+	checksum := crc32.ChecksumIEEE(checkSumByte)
+	binary.LittleEndian.PutUint32(buf[8:12], checksum)
+
+	return buf
 }
 
 // Deserialize unpacks from bytes, validates checksum
