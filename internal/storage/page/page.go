@@ -2,7 +2,6 @@ package page
 
 import (
 	"encoding/binary"
-	"errors"
 	"hash/crc32"
 
 	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
@@ -48,7 +47,7 @@ func (p *Page) Serialize() []byte {
 // Deserialize unpacks from bytes, validates checksum
 func Deserialize(data []byte) (*Page, error) {
 	if len(data) != util.PageSize {
-		return nil, errors.New("Invalid Page Size")
+		return nil, util.ErrInvalidPageSize
 	}
 
 	// stored Checksum
@@ -61,7 +60,7 @@ func Deserialize(data []byte) (*Page, error) {
 	checksum := crc32.ChecksumIEEE(checksumByte)
 
 	if checksum != pageChecksum {
-		return nil, errors.New("Mismatch deserialized checksum ")
+		return nil, util.ErrChecksumMismatch
 	}
 
 	var page Page
@@ -80,7 +79,7 @@ func (p *PageHeader) SetDirtyFlag() {
 
 func (p *PageHeader) ClearDirtyFlag() error {
 	if p.Flags&DIRTY_FLAG == 0 {
-		return errors.New("page is not dirty")
+		return util.ErrPageNotDirty
 	}
 	p.Flags &^= DIRTY_FLAG
 	return nil
@@ -96,7 +95,7 @@ func (p *PageHeader) SetPinnedFlag() {
 
 func (p *PageHeader) ClearPinnedFlag() error {
 	if p.Flags&PINNED_FLAG == 0 {
-		return errors.New("page is not pinned")
+		return util.ErrPageNotPinned
 	}
 	p.Flags &^= PINNED_FLAG
 	return nil
