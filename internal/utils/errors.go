@@ -3,6 +3,7 @@ package util
 import "errors"
 
 var (
+	ErrInvalidPageId         = errors.New("invalid page id")
 	ErrInvalidPageSize       = errors.New("invalid page size")
 	ErrChecksumMismatch      = errors.New("checksum mismatch")
 	ErrInvalidInitialPages   = errors.New("initial pages must be positive")

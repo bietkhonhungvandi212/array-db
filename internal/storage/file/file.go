@@ -58,6 +58,52 @@ func NewFileManager(path string, initialPages int) (*FileManager, error) {
 	return &FileManager{file: f, data: data, size: initialSize, mapping: h}, nil
 }
 
+// When read from disk -> Deseialize the data to page.Page
+/* READ FILE */
+func (file *FileManager) ReadPage(pageId util.PageID) (*page.Page, error) {
+	offset := int64(pageId) * int64(util.PageSize)
+	if offset+util.PageSize > file.size {
+		return nil, util.ErrInvalidPageSize
+	}
+
+	return page.Deserialize(file.data[offset : offset+int64(util.PageSize)])
+}
+
+// When write to disk -> Serialize the data to []byte and store them in disk by offset
+/* WRITE FILE */
+func (fm *FileManager) WritePage(p *page.Page) error {
+	offset := int64(p.Header.PageID) * int64(util.PageSize)
+	if offset+int64(util.PageSize) > fm.size {
+		newSize := max(fm.size*2, offset+int64(util.PageSize))
+		if newSize > MAX_MAP_SIZE {
+			return util.ErrMaxMapSizeExceeded
+		}
+
+		if err := fm.file.Truncate(newSize); err != nil {
+			return err
+		}
+		if err := syscall.UnmapViewOfFile(uintptr(unsafe.Pointer(&fm.data[0]))); err != nil {
+			return err
+		}
+		if err := syscall.CloseHandle(fm.mapping); err != nil {
+			return err
+		}
+		h, err := syscall.CreateFileMapping(syscall.Handle(fm.file.Fd()), nil, syscall.PAGE_READWRITE, 0, uint32(newSize), nil)
+		if err != nil {
+			return err
+		}
+		ptr, err := syscall.MapViewOfFile(h, syscall.FILE_MAP_WRITE, 0, 0, uintptr(newSize))
+		if err != nil {
+			return err
+		}
+		fm.data = (*[1 << 30]byte)(unsafe.Pointer(ptr))[:newSize:newSize]
+		fm.size = newSize
+		fm.mapping = h
+	}
+	copy(fm.data[offset:], p.Serialize())
+	return nil
+}
+
 /**
 * CLOSE FUNCTION
 **/
@@ -83,11 +129,4 @@ func (fm *FileManager) Close() error {
 	}
 
 	return err
-}
-
-// When read from disk -> Deseialize the data to page.Page
-// When write to disk -> Serialize the data to []byte and store them in disk by offset
-/* READ FILE */
-func (file *FileManager) ReadPage(pageId util.PageID) (*page.Page, error) {
-	return nil, nil
 }
