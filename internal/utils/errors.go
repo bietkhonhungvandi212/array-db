@@ -13,5 +13,6 @@ var (
 	ErrPageAlreadyPinned     = errors.New("page is already pinned")
 	ErrPageNotPinned         = errors.New("page is not pinned")
 	ErrPageOffsetOutOfBounds = errors.New("page offset out of bounds")
+	ErrPageOutOfBounds       = errors.New("page out of bounds")
 	ErrInvalidOffset         = errors.New("invalid offset or size")
 )

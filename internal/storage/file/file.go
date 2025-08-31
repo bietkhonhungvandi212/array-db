@@ -2,6 +2,7 @@ package file
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"syscall"
 	"unsafe"
@@ -16,14 +17,14 @@ import (
 **/
 const MAX_MAP_SIZE = 1 << 28 // 256MB limit
 type FileManager struct {
-	file    *os.File
-	data    []byte
-	size    int64
-	mapping syscall.Handle
+	File    *os.File
+	Data    []byte
+	Size    int64
+	Mapping syscall.Handle
 }
 
 func NewFileManager(path string, initialPages int) (*FileManager, error) {
-	if initialPages < 0 {
+	if initialPages <= 0 {
 		return nil, util.ErrInvalidInitialPages
 	}
 
@@ -32,75 +33,85 @@ func NewFileManager(path string, initialPages int) (*FileManager, error) {
 		return nil, util.ErrMaxMapSizeExceeded
 	}
 
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0666)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open file: %w", err)
 	}
 
 	if err := f.Truncate(initialSize); err != nil {
 		f.Close()
-		return nil, err
+		return nil, fmt.Errorf("truncate: %w", err)
 	}
 
 	h, err := syscall.CreateFileMapping(syscall.Handle(f.Fd()), nil, syscall.PAGE_READWRITE, 0, uint32(initialSize), nil)
 	if err != nil {
 		f.Close()
-		return nil, err
+		return nil, fmt.Errorf("map view: %w", err)
 	}
 
 	ptr, err := syscall.MapViewOfFile(h, syscall.FILE_MAP_WRITE, 0, 0, uintptr(initialSize))
 	if err != nil {
+		if err := syscall.CloseHandle(h); err != nil {
+			return nil, err
+		}
+
 		f.Close()
 		return nil, err
 	}
 
-	data := (*[1 << 30]byte)(unsafe.Pointer(ptr))[:initialSize:initialSize]
-	return &FileManager{file: f, data: data, size: initialSize, mapping: h}, nil
+	data := (*[MAX_MAP_SIZE]byte)(unsafe.Pointer(ptr))[:initialSize:initialSize]
+	return &FileManager{File: f, Data: data, Size: initialSize, Mapping: h}, nil
 }
 
 // When read from disk -> Deseialize the data to page.Page
 /* READ FILE */
 func (file *FileManager) ReadPage(pageId util.PageID) (*page.Page, error) {
 	offset := int64(pageId) * int64(util.PageSize)
-	if offset+util.PageSize > file.size {
-		return nil, util.ErrInvalidPageSize
+	if offset+util.PageSize > file.Size {
+		return nil, util.ErrPageOutOfBounds
 	}
 
-	return page.Deserialize(file.data[offset : offset+int64(util.PageSize)])
+	page, err := page.Deserialize(file.Data[offset : offset+int64(util.PageSize)])
+	if err != nil {
+		return nil, fmt.Errorf("deserialize page %d: %w", pageId, err)
+	}
+
+	return page, nil
 }
 
 // When write to disk -> Serialize the data to []byte and store them in disk by offset
 /* WRITE FILE */
 func (fm *FileManager) WritePage(p *page.Page) error {
 	offset := int64(p.Header.PageID) * int64(util.PageSize)
-	if offset+int64(util.PageSize) > fm.size {
-		newSize := max(fm.size*2, offset+int64(util.PageSize))
+	if offset+int64(util.PageSize) > fm.Size {
+		newSize := max(fm.Size*2, offset+int64(util.PageSize))
 		if newSize > MAX_MAP_SIZE {
 			return util.ErrMaxMapSizeExceeded
 		}
 
-		if err := fm.file.Truncate(newSize); err != nil {
-			return err
+		if err := fm.File.Truncate(newSize); err != nil {
+			return fmt.Errorf("truncate to %d: %w", newSize, err)
 		}
-		if err := syscall.UnmapViewOfFile(uintptr(unsafe.Pointer(&fm.data[0]))); err != nil {
-			return err
+		if err := syscall.UnmapViewOfFile(uintptr(unsafe.Pointer(&fm.Data[0]))); err != nil {
+			return fmt.Errorf("unmap during resize: %w", err)
 		}
-		if err := syscall.CloseHandle(fm.mapping); err != nil {
-			return err
+		if err := syscall.CloseHandle(fm.Mapping); err != nil {
+			return fmt.Errorf("close handle during resize: %w", err)
 		}
-		h, err := syscall.CreateFileMapping(syscall.Handle(fm.file.Fd()), nil, syscall.PAGE_READWRITE, 0, uint32(newSize), nil)
+		h, err := syscall.CreateFileMapping(syscall.Handle(fm.File.Fd()), nil, syscall.PAGE_READWRITE, 0, uint32(newSize), nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("create mapping during resize: %w", err)
 		}
 		ptr, err := syscall.MapViewOfFile(h, syscall.FILE_MAP_WRITE, 0, 0, uintptr(newSize))
 		if err != nil {
-			return err
+			return fmt.Errorf("map view during resize: %w", err)
 		}
-		fm.data = (*[1 << 30]byte)(unsafe.Pointer(ptr))[:newSize:newSize]
-		fm.size = newSize
-		fm.mapping = h
+		fm.Data = (*[MAX_MAP_SIZE]byte)(unsafe.Pointer(ptr))[:newSize:newSize]
+		fm.Size = newSize
+		fm.Mapping = h
 	}
-	copy(fm.data[offset:], p.Serialize())
+
+	copy(fm.Data[offset:], p.Serialize())
 	return nil
 }
 
@@ -108,25 +119,30 @@ func (fm *FileManager) WritePage(p *page.Page) error {
 * CLOSE FUNCTION
 **/
 func (fm *FileManager) Close() error {
+	if fm == nil {
+		return nil // Idempotent
+	}
 	var err error
-	if fm.data != nil {
-		if e := syscall.UnmapViewOfFile(uintptr(unsafe.Pointer(&fm.data[0]))); e != nil {
-			err = errors.Join(err, e)
+	if fm.Data != nil {
+		if e := syscall.UnmapViewOfFile(uintptr(unsafe.Pointer(&fm.Data[0]))); e != nil {
+			err = errors.Join(err, fmt.Errorf("unmap: %w", e))
 		}
-		fm.data = nil
+		fm.Data = nil
 	}
-	if fm.mapping != 0 {
-		if e := syscall.CloseHandle(fm.mapping); e != nil {
-			err = errors.Join(err, e)
+	if fm.Mapping != 0 {
+		if e := syscall.CloseHandle(fm.Mapping); e != nil {
+			err = errors.Join(err, fmt.Errorf("close mapping: %w", e))
 		}
-		fm.mapping = 0
+		fm.Mapping = 0
 	}
-	if fm.file != nil {
-		if e := fm.file.Close(); e != nil {
-			err = errors.Join(err, e)
+	if fm.File != nil {
+		if e := fm.File.Sync(); e != nil {
+			err = errors.Join(err, fmt.Errorf("sync file: %w", e))
 		}
-		fm.file = nil
+		if e := fm.File.Close(); e != nil {
+			err = errors.Join(err, fmt.Errorf("close file: %w", e))
+		}
+		fm.File = nil
 	}
-
 	return err
 }
