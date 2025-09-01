@@ -1,12 +1,14 @@
 package file
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/page"
 	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
+	"github.com/stretchr/testify/assert"
 )
 
 // Helper function to create a temporary test file
@@ -117,4 +119,135 @@ func TestNewFileManager(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewFileManager_ExceedsMaxMapSize(t *testing.T) {
+	tempFile, cleanup := createTempFile(t)
+	defer cleanup()
+
+	// Calculate pages that would exceed MAX_MAP_SIZE
+	exceedingPages := int(MAX_MAP_SIZE/int64(util.PageSize)) + 1
+
+	fm, err := NewFileManager(tempFile, exceedingPages)
+
+	if err != util.ErrMaxMapSizeExceeded {
+		if fm != nil {
+			fm.Close()
+		}
+		t.Errorf("Expected ErrMaxMapSizeExceeded but got %v", err)
+	}
+}
+
+func TestFileManagerReadWrite(t *testing.T) {
+	tests := []struct {
+		name          string
+		initialPages  int
+		pageID        util.PageID
+		data          []byte                              // Data to write to Page.Data
+		prepareData   func(fm *FileManager, p *page.Page) // Optional data corruption
+		expectedError error
+		shouldSucceed bool
+	}{
+		{
+			name:          "Valid read-write with text data",
+			initialPages:  1,
+			pageID:        0,
+			data:          []byte("test instructor record: ID=12345, name=John Doe"),
+			prepareData:   nil,
+			expectedError: nil,
+			shouldSucceed: true,
+		},
+		{
+			name:          "Valid read-write with binary data",
+			initialPages:  1,
+			pageID:        0,
+			data:          generateBinaryData(100), // Binary pattern
+			prepareData:   nil,
+			expectedError: nil,
+			shouldSucceed: true,
+		},
+		{
+			name:         "Checksum mismatch",
+			initialPages: 1,
+			pageID:       0,
+			data:         []byte("test data"),
+			prepareData: func(fm *FileManager, p *page.Page) {
+				fm.WritePage(p)
+				fm.Data[page.HEADER_SIZE] ^= 0xFF // Corrupt first data byte
+			},
+			expectedError: util.ErrChecksumMismatch,
+			shouldSucceed: false,
+		},
+		{
+			name:         "Read from resized file",
+			initialPages: 1,
+			pageID:       2,
+			data:         []byte("resized page data"),
+			prepareData: func(fm *FileManager, p *page.Page) {
+				fm.WritePage(p) // Triggers resize
+			},
+			expectedError: nil,
+			shouldSucceed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, cleanup := createTempFile(t)
+			defer cleanup()
+
+			fm, err := NewFileManager(path, tt.initialPages)
+			if err != nil {
+				if tt.shouldSucceed {
+					t.Fatalf("NewFileManager: %v", err)
+				}
+				return
+			}
+			defer fm.Close()
+
+			// Prepare page
+			p := &page.Page{Header: page.PageHeader{PageID: tt.pageID}}
+			if len(tt.data) > len(p.Data) {
+				t.Fatalf("Test data too large: %d bytes, max %d", len(tt.data), len(p.Data))
+			}
+			copy(p.Data[:], tt.data)
+			p.Header.SetDirtyFlag()
+			// Write page and optionally corrupt
+			if tt.prepareData != nil {
+				tt.prepareData(fm, p)
+			} else {
+				err = fm.WritePage(p)
+				if !tt.shouldSucceed {
+					assert.Error(t, err)
+					return
+				}
+				assert.NoError(t, err, "WritePage failed")
+			}
+
+			// Read and verify
+			p2, err := fm.ReadPage(tt.pageID)
+			if tt.shouldSucceed {
+				assert.NoError(t, err, "ReadPage failed")
+				assert.NotNil(t, p2, "Expected valid page but got nil")
+				assert.Equal(t, p.Header.PageID, p2.Header.PageID, "PageID mismatch")
+				assert.Equal(t, p.Header.Flags, p2.Header.Flags, "Flags mismatch")
+				assert.True(t, bytes.Equal(p.Data[:], p2.Data[:]), "Data mismatch")
+			} else {
+				assert.Error(t, err, "Expected error but got success")
+				assert.Nil(t, p2, "Expected nil page on error")
+				if tt.expectedError != nil {
+					assert.Contains(t, err.Error(), tt.expectedError.Error(), "Wrong error type")
+				}
+			}
+		})
+	}
+}
+
+// Helper to generate binary data for testing
+func generateBinaryData(size int) []byte {
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = byte(i % 256) // Pattern: 0, 1, 2, ..., 255
+	}
+	return data
 }
