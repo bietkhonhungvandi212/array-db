@@ -172,7 +172,9 @@ func TestFileManagerReadWrite(t *testing.T) {
 			pageID:       0,
 			data:         []byte("test data"),
 			prepareData: func(fm *FileManager, p *page.Page) {
-				fm.WritePage(p)
+				if err := fm.WritePage(p); err != nil {
+					t.Fatalf("Write fail: %v", err)
+				} // Triggers resize
 				fm.Data[page.HEADER_SIZE] ^= 0xFF // Corrupt first data byte
 			},
 			expectedError: util.ErrChecksumMismatch,
@@ -184,7 +186,9 @@ func TestFileManagerReadWrite(t *testing.T) {
 			pageID:       2,
 			data:         []byte("resized page data"),
 			prepareData: func(fm *FileManager, p *page.Page) {
-				fm.WritePage(p) // Triggers resize
+				if err := fm.WritePage(p); err != nil {
+					t.Fatalf("Write fail: %v", err)
+				} // Triggers resize
 			},
 			expectedError: nil,
 			shouldSucceed: true,
