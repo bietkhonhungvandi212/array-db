@@ -3,6 +3,7 @@
 package file
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -42,6 +43,7 @@ func mmap(fm *FileManager, size int64) error {
 	}
 	fm.Data = (*[util.MAX_MAP_SIZE]byte)(unsafe.Pointer(ptr))[:size:size]
 	fm.Size = size
+	fm.Mapping = h
 	return nil
 }
 
@@ -61,7 +63,16 @@ func munmap(fm *FileManager) error {
 		err = fmt.Errorf("unmap: %w", e)
 	}
 
+	if fm.Mapping != 0 {
+		if e := syscall.CloseHandle(fm.Mapping); e != nil {
+			err = errors.Join(err, fmt.Errorf("close handle: %w", e))
+		}
+		fm.Mapping = 0
+	}
+
 	fm.Data = nil
 	fm.Size = 0
+	fm.Mapping = 0
+
 	return err
 }

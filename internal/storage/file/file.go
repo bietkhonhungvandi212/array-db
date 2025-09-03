@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
 
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/page"
 	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
@@ -14,9 +15,10 @@ import (
 * we will map the file to memory in disk that facilitate accessility to disk
 **/
 type FileManager struct {
-	File *os.File
-	Data []byte
-	Size int64
+	File    *os.File
+	Data    []byte
+	Size    int64
+	Mapping syscall.Handle
 }
 
 func NewFileManager(path string, initialPages int) (*FileManager, error) {
