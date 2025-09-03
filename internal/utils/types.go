@@ -9,7 +9,10 @@ import (
 type PageID uint64
 
 // PageSize represents the standard page size (4KB) - > 4096 bytes
-const PageSize = 4096
+const (
+	PageSize     = 4096
+	MAX_MAP_SIZE = 1 << 28 // 256MB limit
+)
 
 // TransactionID represents a unique transaction identifier
 type TransactionID uint64

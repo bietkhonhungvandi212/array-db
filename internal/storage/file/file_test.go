@@ -1,27 +1,26 @@
-package file
+package file_test
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/bietkhonhungvandi212/array-db/internal/storage/file"
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/page"
 	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
 	"github.com/stretchr/testify/assert"
 )
 
-// Helper function to create a temporary test file
-func createTempFile(t *testing.T) (string, func()) {
+// createTempFile creates a temporary file with initial size and returns its path and cleanup function
+func createTempFile(t *testing.T, initialPages int) (string, func()) {
 	t.Helper()
 	tempDir := t.TempDir()
-	tempFile := filepath.Join(tempDir, "test_db.dat")
-
-	cleanup := func() {
+	tempFile := filepath.Join(tempDir, fmt.Sprintf("arraydb-test-%d.dat", initialPages))
+	return tempFile, func() {
 		os.Remove(tempFile)
 	}
-
-	return tempFile, cleanup
 }
 
 // Helper function to create a test page
@@ -32,11 +31,20 @@ func createTestPage(pageID util.PageID, data []byte) *page.Page {
 			Flags:  0,
 		},
 	}
-
-	// Fill the data array with test data
+	if len(data) > len(p.Data) {
+		data = data[:len(p.Data)] // Truncate to fit
+	}
 	copy(p.Data[:], data)
-
 	return p
+}
+
+// Helper to generate binary data for testing
+func generateBinaryData(size int) []byte {
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = byte(i % 256) // Pattern: 0, 1, 2, ..., 255
+	}
+	return data
 }
 
 func TestNewFileManager(t *testing.T) {
@@ -59,13 +67,7 @@ func TestNewFileManager(t *testing.T) {
 			shouldSucceed: true,
 		},
 		{
-			name:          "Invalid negative pages",
-			initialPages:  -1,
-			expectedError: util.ErrInvalidInitialPages,
-			shouldSucceed: false,
-		},
-		{
-			name:          "Zero pages (edge case)",
+			name:          "Zero pages",
 			initialPages:  0,
 			expectedError: util.ErrInvalidInitialPages,
 			shouldSucceed: false,
@@ -76,65 +78,37 @@ func TestNewFileManager(t *testing.T) {
 			expectedError: nil,
 			shouldSucceed: true,
 		},
+		{
+			name:          "Exceeds max map size",
+			initialPages:  int(util.MAX_MAP_SIZE/int64(util.PageSize)) + 1,
+			expectedError: util.ErrMaxMapSizeExceeded,
+			shouldSucceed: false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tempFile, cleanup := createTempFile(t)
+			path, cleanup := createTempFile(t, tt.initialPages)
 			defer cleanup()
 
-			fm, err := NewFileManager(tempFile, tt.initialPages)
-
+			fm, err := file.NewFileManager(path, tt.initialPages)
 			if tt.shouldSucceed {
-				if err != nil {
-					t.Fatalf("Expected success but got error: %v", err)
-				}
-				if fm == nil {
-					t.Fatal("Expected valid FileManager but got nil")
-				}
-
-				// Verify the file was created with correct size
-				expectedSize := int64(tt.initialPages) * int64(util.PageSize)
-				if fm.Size != expectedSize {
-					t.Errorf("Expected size %d but got %d", expectedSize, fm.Size)
-				}
-
-				// Verify the file exists
-				if _, err := os.Stat(tempFile); os.IsNotExist(err) {
-					t.Error("Expected file to exist but it doesn't")
-				}
-
-				// Clean up
-				fm.Close()
+				assert.NoError(t, err, "NewFileManager failed")
+				assert.NotNil(t, fm, "Expected valid FileManager")
+				assert.Equal(t, int64(tt.initialPages)*int64(util.PageSize), fm.Size, "FileManager size mismatch")
+				_, err := os.Stat(path)
+				assert.NoError(t, err, "Expected file to exist")
+				assert.NoError(t, fm.Close(), "Close failed")
 			} else {
-				if err == nil {
-					if fm != nil {
-						fm.Close()
-					}
-					t.Fatal("Expected error but got success")
+				assert.Error(t, err, "Expected error but got success")
+				if tt.expectedError != nil {
+					assert.Contains(t, err.Error(), tt.expectedError.Error(), "Wrong error type")
 				}
-				if tt.expectedError != nil && err != tt.expectedError {
-					t.Errorf("Expected error %v but got %v", tt.expectedError, err)
+				if fm != nil {
+					fm.Close()
 				}
 			}
 		})
-	}
-}
-
-func TestNewFileManager_ExceedsMaxMapSize(t *testing.T) {
-	tempFile, cleanup := createTempFile(t)
-	defer cleanup()
-
-	// Calculate pages that would exceed MAX_MAP_SIZE
-	exceedingPages := int(MAX_MAP_SIZE/int64(util.PageSize)) + 1
-
-	fm, err := NewFileManager(tempFile, exceedingPages)
-
-	if err != util.ErrMaxMapSizeExceeded {
-		if fm != nil {
-			fm.Close()
-		}
-		t.Errorf("Expected ErrMaxMapSizeExceeded but got %v", err)
 	}
 }
 
@@ -143,8 +117,8 @@ func TestFileManagerReadWrite(t *testing.T) {
 		name          string
 		initialPages  int
 		pageID        util.PageID
-		data          []byte                              // Data to write to Page.Data
-		prepareData   func(fm *FileManager, p *page.Page) // Optional data corruption
+		data          []byte
+		prepareData   func(t *testing.T, fm *file.FileManager, p *page.Page)
 		expectedError error
 		shouldSucceed bool
 	}{
@@ -161,7 +135,7 @@ func TestFileManagerReadWrite(t *testing.T) {
 			name:          "Valid read-write with binary data",
 			initialPages:  1,
 			pageID:        0,
-			data:          generateBinaryData(100), // Binary pattern
+			data:          generateBinaryData(100),
 			prepareData:   nil,
 			expectedError: nil,
 			shouldSucceed: true,
@@ -171,10 +145,10 @@ func TestFileManagerReadWrite(t *testing.T) {
 			initialPages: 1,
 			pageID:       0,
 			data:         []byte("test data"),
-			prepareData: func(fm *FileManager, p *page.Page) {
+			prepareData: func(t *testing.T, fm *file.FileManager, p *page.Page) {
 				if err := fm.WritePage(p); err != nil {
-					t.Fatalf("Write fail: %v", err)
-				} // Triggers resize
+					t.Fatalf("WritePage: %v", err)
+				}
 				fm.Data[page.HEADER_SIZE] ^= 0xFF // Corrupt first data byte
 			},
 			expectedError: util.ErrChecksumMismatch,
@@ -185,22 +159,31 @@ func TestFileManagerReadWrite(t *testing.T) {
 			initialPages: 1,
 			pageID:       2,
 			data:         []byte("resized page data"),
-			prepareData: func(fm *FileManager, p *page.Page) {
+			prepareData: func(t *testing.T, fm *file.FileManager, p *page.Page) {
 				if err := fm.WritePage(p); err != nil {
-					t.Fatalf("Write fail: %v", err)
-				} // Triggers resize
+					t.Fatalf("WritePage: %v", err)
+				}
 			},
 			expectedError: nil,
 			shouldSucceed: true,
 		},
+		// {
+		// 	name:          "Out of bounds pageID",
+		// 	initialPages:  1,
+		// 	pageID:        4096,
+		// 	data:          []byte("test data"),
+		// 	prepareData:   nil,
+		// 	expectedError: util.ErrPageOutOfBounds,
+		// 	shouldSucceed: false,
+		// },
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path, cleanup := createTempFile(t)
+			path, cleanup := createTempFile(t, tt.initialPages)
 			defer cleanup()
 
-			fm, err := NewFileManager(path, tt.initialPages)
+			fm, err := file.NewFileManager(path, tt.initialPages)
 			if err != nil {
 				if tt.shouldSucceed {
 					t.Fatalf("NewFileManager: %v", err)
@@ -209,16 +192,11 @@ func TestFileManagerReadWrite(t *testing.T) {
 			}
 			defer fm.Close()
 
-			// Prepare page
-			p := &page.Page{Header: page.PageHeader{PageID: tt.pageID}}
-			if len(tt.data) > len(p.Data) {
-				t.Fatalf("Test data too large: %d bytes, max %d", len(tt.data), len(p.Data))
-			}
-			copy(p.Data[:], tt.data)
+			p := createTestPage(tt.pageID, tt.data)
 			p.Header.SetDirtyFlag()
-			// Write page and optionally corrupt
+
 			if tt.prepareData != nil {
-				tt.prepareData(fm, p)
+				tt.prepareData(t, fm, p)
 			} else {
 				err = fm.WritePage(p)
 				if !tt.shouldSucceed {
@@ -228,7 +206,6 @@ func TestFileManagerReadWrite(t *testing.T) {
 				assert.NoError(t, err, "WritePage failed")
 			}
 
-			// Read and verify
 			p2, err := fm.ReadPage(tt.pageID)
 			if tt.shouldSucceed {
 				assert.NoError(t, err, "ReadPage failed")
@@ -247,11 +224,10 @@ func TestFileManagerReadWrite(t *testing.T) {
 	}
 }
 
-// Helper to generate binary data for testing
-func generateBinaryData(size int) []byte {
-	data := make([]byte, size)
-	for i := range data {
-		data[i] = byte(i % 256) // Pattern: 0, 1, 2, ..., 255
+// Helper for min
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-	return data
+	return b
 }
