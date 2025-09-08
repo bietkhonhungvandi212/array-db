@@ -17,4 +17,5 @@ var (
 	ErrInvalidOffset         = errors.New("invalid offset or size")
 	ErrFileManagerNil        = errors.New("file manager is nil")
 	ErrInvalidPoolSize       = errors.New("invalid pool size")
+	ErrOutBoundOfFrame       = errors.New("frame idx out of bound")
 )
