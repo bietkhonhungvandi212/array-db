@@ -16,4 +16,5 @@ var (
 	ErrPageOutOfBounds       = errors.New("page out of bounds")
 	ErrInvalidOffset         = errors.New("invalid offset or size")
 	ErrFileManagerNil        = errors.New("file manager is nil")
+	ErrInvalidPoolSize       = errors.New("invalid pool size")
 )
