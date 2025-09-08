@@ -18,4 +18,5 @@ var (
 	ErrFileManagerNil        = errors.New("file manager is nil")
 	ErrInvalidPoolSize       = errors.New("invalid pool size")
 	ErrOutBoundOfFrame       = errors.New("frame idx out of bound")
+	ErrInvalidEviction       = errors.New("invalid eviction")
 )

@@ -1,6 +1,8 @@
 package buffer
 
 import (
+	"sync"
+
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/file"
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/page"
 	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
@@ -19,6 +21,8 @@ type BufferPool struct {
 	lruTail    int   // Tail of LRU (most recent)
 	poolSize   int   // Total frames
 	file.Filer
+
+	mu sync.Mutex
 }
 
 func NewBufferPool(size int, filer file.Filer) *BufferPool {
@@ -52,21 +56,109 @@ func NewBufferPool(size int, filer file.Filer) *BufferPool {
 	return &bp
 }
 
-func (bp *BufferPool) Pin(frameIdx int) {
+// DRAFT
+func (bp *BufferPool) GetPage(pageID util.PageID) (*page.Page, error) {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+
+	if frameIdx, exists := bp.pageToIdx[pageID]; exists {
+		err := bp.moveToTail(frameIdx) // Internal method
+		if err != nil {
+			return nil, err
+		}
+
+		return &bp.frames[frameIdx], nil
+	}
+	// ... handle cache miss
+
+	return nil, nil
 }
 
-func (bp *BufferPool) isFrameDirty(frameIdx int) (bool, error) {
-	if frameIdx >= bp.poolSize || frameIdx < 0 {
-		return false, util.ErrOutBoundOfFrame
+// ===================== HELPER FUNCTION =====================
+func (this *BufferPool) moveToTail(frameIdx int) error {
+	if err := this.removeFromLRU(frameIdx); err != nil {
+		return err
 	}
-
-	return bp.frames[frameIdx].Header.IsDirty(), nil
+	return this.addToTail(frameIdx)
 }
 
-func (bp *BufferPool) isFramePinned(frameIdx int) (bool, error) {
-	if frameIdx >= bp.poolSize || frameIdx < 0 {
-		return false, util.ErrOutBoundOfFrame
+func (this *BufferPool) addToTail(frameIdx int) error {
+	if frameIdx >= this.poolSize || frameIdx < 0 {
+		return util.ErrOutBoundOfFrame
 	}
 
-	return bp.frames[frameIdx].Header.IsPinned(), nil
+	tmp := this.lruTail
+	this.lruTail = frameIdx
+	this.prevLRU[frameIdx] = tmp
+	this.nextLRU[frameIdx] = -1
+
+	if tmp != -1 {
+		this.nextLRU[tmp] = frameIdx
+	}
+
+	if this.lruHead == -1 {
+		this.lruHead = frameIdx
+	}
+
+	return nil
+}
+
+func (this *BufferPool) removeFromLRU(frameIdx int) error {
+	if frameIdx >= this.poolSize || frameIdx < 0 {
+		return util.ErrOutBoundOfFrame
+	}
+
+	if this.lruHead == -1 || (this.nextLRU[frameIdx] == -1 && this.prevLRU[frameIdx] == -1 && this.lruHead != frameIdx) {
+		return util.ErrInvalidEviction
+	}
+
+	// single node
+	if this.lruHead == frameIdx && this.lruTail == frameIdx {
+		this.lruHead = -1
+		this.lruTail = -1
+
+		return nil
+	}
+
+	// Update head
+	if this.prevLRU[frameIdx] == -1 {
+		nextIdx := this.nextLRU[frameIdx]
+		this.lruHead = nextIdx
+		this.nextLRU[frameIdx] = -1
+		this.prevLRU[nextIdx] = -1
+
+		return nil
+	}
+
+	// Update tail
+	if this.nextLRU[frameIdx] == -1 {
+		prevIdx := this.prevLRU[frameIdx]
+		this.lruTail = prevIdx
+		this.nextLRU[prevIdx] = -1
+		this.prevLRU[frameIdx] = -1
+
+		return nil
+	}
+
+	// node.Next.Prev = node.Prev
+	// node.Prev.Next = node.Next
+	this.nextLRU[this.prevLRU[frameIdx]] = this.nextLRU[frameIdx]
+	this.prevLRU[this.nextLRU[frameIdx]] = this.prevLRU[frameIdx]
+
+	this.nextLRU[frameIdx] = -1
+	this.prevLRU[frameIdx] = -1
+
+	return nil
+}
+
+func (this *BufferPool) allocFromFree() int {
+	if this.freeHead == -1 {
+		return -1
+	}
+
+	freeIdx := this.freeHead
+	this.freeHead = this.nextFree[freeIdx]
+	this.nextFree[freeIdx] = -1
+
+	return freeIdx
 }
