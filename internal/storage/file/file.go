@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/page"
@@ -19,6 +20,8 @@ type FileManager struct {
 	Data    []byte
 	Size    int64
 	Mapping syscall.Handle
+
+	mmapLock sync.RWMutex
 }
 
 func NewFileManager(path string, initialPages int) (*FileManager, error) {
@@ -46,12 +49,21 @@ func NewFileManager(path string, initialPages int) (*FileManager, error) {
 // When read from disk -> Deseialize the data to page.Page
 /* READ FILE */
 func (fm *FileManager) ReadPage(pageId util.PageID) (*page.Page, error) {
+	fm.mmapLock.RLock()
+
 	offset := int64(pageId) * int64(util.PageSize)
 	if offset+util.PageSize > fm.Size {
+		fm.mmapLock.RUnlock()
 		return nil, util.ErrPageOutOfBounds
 	}
 
-	page, err := page.Deserialize(fm.Data[offset : offset+int64(util.PageSize)])
+	// Make a copy of the data to avoid holding the lock during deserialization
+	pageData := make([]byte, util.PageSize)
+	copy(pageData, fm.Data[offset:offset+int64(util.PageSize)])
+
+	fm.mmapLock.RUnlock()
+
+	page, err := page.Deserialize(pageData)
 	if err != nil {
 		return nil, fmt.Errorf("deserialize page %d: %w", pageId, err)
 	}
@@ -62,6 +74,12 @@ func (fm *FileManager) ReadPage(pageId util.PageID) (*page.Page, error) {
 // When write to disk -> Serialize the data to []byte and store them in disk by offset
 /* WRITE FILE */
 func (fm *FileManager) WritePage(p *page.Page) error {
+	// Serialize outside of lock to avoid holding it during expensive operation
+	serializedData := p.Serialize()
+
+	fm.mmapLock.Lock()
+	defer fm.mmapLock.Unlock()
+
 	offset := int64(p.Header.PageID) * int64(util.PageSize)
 	if offset+int64(util.PageSize) > fm.Size {
 		newSize := max(fm.Size*2, offset+int64(util.PageSize))
@@ -78,7 +96,7 @@ func (fm *FileManager) WritePage(p *page.Page) error {
 		}
 	}
 
-	copy(fm.Data[offset:], p.Serialize())
+	copy(fm.Data[offset:], serializedData)
 	return nil
 }
 
@@ -89,6 +107,10 @@ func (fm *FileManager) Close() error {
 	if fm == nil {
 		return nil // Idempotent
 	}
+
+	fm.mmapLock.Lock()
+	defer fm.mmapLock.Unlock()
+
 	var err error
 	if err := munmap(fm); err != nil {
 		return fmt.Errorf("[close] unmap file fail: %w", err)
