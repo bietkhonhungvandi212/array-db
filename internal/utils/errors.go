@@ -19,4 +19,5 @@ var (
 	ErrInvalidPoolSize       = errors.New("invalid pool size")
 	ErrOutBoundOfFrame       = errors.New("frame idx out of bound")
 	ErrInvalidEviction       = errors.New("invalid eviction")
+	ErrNoFreeFrame           = errors.New("no free frames")
 )
