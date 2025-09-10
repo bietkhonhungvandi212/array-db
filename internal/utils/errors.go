@@ -16,6 +16,7 @@ var (
 	ErrPageOutOfBounds       = errors.New("page out of bounds")
 	ErrInvalidOffset         = errors.New("invalid offset or size")
 	ErrFileManagerNil        = errors.New("file manager is nil")
+	ErrFileDataNil           = errors.New("file data is nil")
 	ErrInvalidPoolSize       = errors.New("invalid pool size")
 	ErrOutBoundOfFrame       = errors.New("frame idx out of bound")
 	ErrInvalidEviction       = errors.New("invalid eviction")

@@ -51,6 +51,11 @@ func NewFileManager(path string, initialPages int) (*FileManager, error) {
 func (fm *FileManager) ReadPage(pageId util.PageID) (*page.Page, error) {
 	fm.mmapLock.RLock()
 
+	if fm.Data == nil {
+		fm.mmapLock.Unlock()
+		return nil, util.ErrFileDataNil
+	}
+
 	offset := int64(pageId) * int64(util.PageSize)
 	if offset+util.PageSize > fm.Size {
 		fm.mmapLock.RUnlock()
