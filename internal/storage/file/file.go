@@ -52,7 +52,7 @@ func (fm *FileManager) ReadPage(pageId util.PageID) (*page.Page, error) {
 	fm.mmapLock.RLock()
 
 	if fm.Data == nil {
-		fm.mmapLock.Unlock()
+		fm.mmapLock.RUnlock()
 		return nil, util.ErrFileDataNil
 	}
 

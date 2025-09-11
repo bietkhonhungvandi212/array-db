@@ -21,4 +21,6 @@ var (
 	ErrOutBoundOfFrame       = errors.New("frame idx out of bound")
 	ErrInvalidEviction       = errors.New("invalid eviction")
 	ErrNoFreeFrame           = errors.New("no free frames")
+	ErrPageIdExistedInBuffer = errors.New("page id existed in buffer")
+	ErrPageNotFound          = errors.New("page not found in buffer")
 )

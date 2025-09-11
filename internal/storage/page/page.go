@@ -23,7 +23,7 @@ type PageHeader struct {
 	PageID   util.PageID // 8 bytes
 	Checksum uint32      // 4 bytes
 	Flags    uint16      // 2 bytes
-	_        uint16      //2 bytes (padding)
+	_        uint16      // 2 bytes (padding)
 }
 
 // Serialize packs the page into a byte slice for writing

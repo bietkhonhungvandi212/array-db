@@ -9,7 +9,7 @@ import (
 )
 
 type BufferPool struct {
-	frames     []page.Page         // Holds page.Page (4KB)
+	frames     []*page.Page        // Holds page.Page (4KB)
 	pageToIdx  map[util.PageID]int // Map the pageId to index
 	pinCounts  []int32
 	dirtyFlags []bool
@@ -29,7 +29,7 @@ func NewBufferPool(size int, filer *file.FileManager) *BufferPool {
 	}
 
 	bp := BufferPool{
-		frames:     make([]page.Page, size),
+		frames:     make([]*page.Page, size),
 		pageToIdx:  make(map[util.PageID]int, size),
 		pinCounts:  make([]int32, size),
 		dirtyFlags: make([]bool, size),
@@ -54,18 +54,108 @@ func NewBufferPool(size int, filer *file.FileManager) *BufferPool {
 	return &bp
 }
 
-/* EVICT LRU */
-func (this *BufferPool) EvictFromLRU() (int, error) {
+/* ALLOCATE FRAME */
+func (this *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
+	if idx, ok := this.pageToIdx[pageId]; ok {
+		return this.frames[idx], nil
+	}
+
+	freeIdx := this.allocFromFree()
+	if freeIdx == -1 { // no free space
+		rmIdx, err := this.removeFromHeadLRU()
+		if err != nil {
+			return nil, err
+		}
+		freeIdx = rmIdx
+	}
+
+	this.resetFrame(freeIdx)
+
+	readPage, err := this.fm.ReadPage(pageId)
+	if err != nil {
+		this.returnFrameToFree(freeIdx)
+		return nil, err
+	}
+
+	this.pageToIdx[pageId] = freeIdx
+	this.frames[freeIdx] = readPage
+
+	return readPage, nil
+}
+
+/* PIN FRAME */
+func (this *BufferPool) PinFrame(pageId util.PageID) (*page.Page, error) {
+	idx, ok := this.pageToIdx[pageId]
+	if !ok {
+		return nil, util.ErrPageNotFound
+	}
+
+	this.pinCounts[idx]++
+	if !this.frames[idx].Header.IsPinned() {
+		this.frames[idx].Header.SetPinnedFlag()
+	}
+
+	this.moveToTail(idx)
+
+	return this.frames[idx], nil
+}
+
+/* UNPIN FRAME */
+func (this *BufferPool) UnpinFrame(pageId util.PageID, isDirty bool) error {
+	idx, ok := this.pageToIdx[pageId]
+	if !ok {
+		return util.ErrPageNotFound
+	}
+
+	if this.pinCounts[idx] <= 0 {
+		return util.ErrPageNotPinned
+	}
+
+	this.pinCounts[idx]--
+
+	if this.pinCounts[idx] == 0 {
+		_ = this.frames[idx].Header.ClearPinnedFlag()
+	}
+
+	if isDirty {
+		this.dirtyFlags[idx] = true
+		this.frames[idx].Header.SetDirtyFlag()
+	}
+
+	return nil
+}
+
+func (this *BufferPool) MarkDirty(pageId util.PageID) error {
+	idx, ok := this.pageToIdx[pageId]
+	if !ok {
+		return util.ErrPageNotFound
+	}
+
+	// Check if page is pinned (should be pinned to modify)
+	if this.pinCounts[idx] <= 0 {
+		return fmt.Errorf("cannot mark unpinned page %d as dirty", pageId)
+	}
+
+	// Mark as dirty
+	this.dirtyFlags[idx] = true
+	this.frames[idx].Header.SetDirtyFlag()
+
+	return nil
+}
+
+// ===================== HELPER FUNCTION =====================
+/* REMOVE HEAD LRU */
+func (this *BufferPool) removeFromHeadLRU() (int, error) {
 	if this.lruHead == -1 {
 		return -1, util.ErrNoFreeFrame // This mark empty LRU
 	}
 
 	currentIdx := this.lruHead
-	for this.pinCounts[currentIdx] != -1 {
-		if this.pinCounts[currentIdx] == 0 && this.frames[currentIdx].Header.IsPinned() {
-			//handle dirty pages
+	for currentIdx != -1 {
+		if this.pinCounts[currentIdx] == 0 && !this.frames[currentIdx].Header.IsPinned() {
+			// handle dirty pages
 			if this.dirtyFlags[currentIdx] {
-				if err := this.fm.WritePage(&this.frames[currentIdx]); err != nil {
+				if err := this.fm.WritePage(this.frames[currentIdx]); err != nil {
 					return -1, fmt.Errorf("[pool] [EvictFromLRU] flush failed: %w", err)
 				}
 
@@ -88,19 +178,6 @@ func (this *BufferPool) EvictFromLRU() (int, error) {
 	return -1, util.ErrNoFreeFrame
 }
 
-// DRAFT
-func (this *BufferPool) GetPage(pageID util.PageID) (*page.Page, error) {
-	if frameIdx, exists := this.pageToIdx[pageID]; exists {
-		this.moveToTail(frameIdx)
-
-		return &this.frames[frameIdx], nil
-	}
-
-	// ... handle cache miss
-	return nil, nil
-}
-
-// ===================== HELPER FUNCTION =====================
 func (this *BufferPool) moveToTail(frameIdx int) {
 	this.removeLRUByIndex(frameIdx)
 	this.addToTail(frameIdx)
@@ -176,4 +253,16 @@ func (this *BufferPool) allocFromFree() int {
 	this.nextFree[freeIdx] = -1
 
 	return freeIdx
+}
+
+func (this *BufferPool) returnFrameToFree(frameIdx int) {
+	this.nextFree[frameIdx] = this.freeHead
+	this.freeHead = frameIdx
+}
+
+func (this *BufferPool) resetFrame(frameIdx int) {
+	this.pinCounts[frameIdx] = 0
+	this.dirtyFlags[frameIdx] = false
+	_ = this.frames[frameIdx].Header.ClearPinnedFlag()
+	_ = this.frames[frameIdx].Header.ClearDirtyFlag()
 }
