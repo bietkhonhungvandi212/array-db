@@ -95,7 +95,9 @@ func (this *BufferPool) PinFrame(pageId util.PageID) (*page.Page, error) {
 		this.frames[idx].Header.SetPinnedFlag()
 	}
 
-	this.moveToTail(idx)
+	if err := this.moveToTail(idx); err != nil {
+		return nil, err
+	}
 
 	return this.frames[idx], nil
 }
@@ -166,7 +168,10 @@ func (this *BufferPool) removeFromHeadLRU() (int, error) {
 				this.dirtyFlags[currentIdx] = false
 			}
 
-			this.removeLRUByIndex(currentIdx)
+			if err := this.removeLRUByIndex(currentIdx); err != nil {
+				return -1, err
+
+			}
 			delete(this.pageToIdx, this.frames[currentIdx].Header.PageID)
 
 			return currentIdx, nil
@@ -178,14 +183,20 @@ func (this *BufferPool) removeFromHeadLRU() (int, error) {
 	return -1, util.ErrNoFreeFrame
 }
 
-func (this *BufferPool) moveToTail(frameIdx int) {
-	this.removeLRUByIndex(frameIdx)
-	this.addToTail(frameIdx)
+func (this *BufferPool) moveToTail(frameIdx int) error {
+	if err := this.removeLRUByIndex(frameIdx); err != nil {
+		return err
+	}
+	if err := this.addToTail(frameIdx); err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func (this *BufferPool) addToTail(frameIdx int) {
+func (this *BufferPool) addToTail(frameIdx int) error {
 	if frameIdx >= this.poolSize || frameIdx < 0 {
-		panic(fmt.Sprintf("[pool] [addToTail] frame index out of bound: %d", frameIdx))
+		return fmt.Errorf("[pool] [addToTail] frame index out of bound: %d", frameIdx)
 	}
 
 	tmp := this.lruTail
@@ -200,15 +211,17 @@ func (this *BufferPool) addToTail(frameIdx int) {
 	if this.lruHead == -1 {
 		this.lruHead = frameIdx
 	}
+
+	return nil
 }
 
-func (this *BufferPool) removeLRUByIndex(frameIdx int) {
+func (this *BufferPool) removeLRUByIndex(frameIdx int) error {
 	if frameIdx >= this.poolSize || frameIdx < 0 {
-		panic(fmt.Sprintf("[pool] [removeFromLRU] frame index out of bound: %d", frameIdx))
+		return fmt.Errorf("[pool] [removeFromLRU] frame index out of bound: %d", frameIdx)
 	}
 
 	if this.lruHead == -1 || (this.nextLRU[frameIdx] == -1 && this.prevLRU[frameIdx] == -1 && this.lruHead != frameIdx) {
-		panic(fmt.Sprintf("[pool] [removeFromLRU] frame index %d is invalid ", frameIdx))
+		return fmt.Errorf("[pool] [removeFromLRU] frame index %d is invalid ", frameIdx)
 	}
 
 	prev := this.prevLRU[frameIdx]
@@ -241,6 +254,8 @@ func (this *BufferPool) removeLRUByIndex(frameIdx int) {
 	// Clear the removed node's links
 	this.nextLRU[frameIdx] = -1
 	this.prevLRU[frameIdx] = -1
+
+	return nil
 }
 
 func (this *BufferPool) allocFromFree() int {
@@ -263,6 +278,12 @@ func (this *BufferPool) returnFrameToFree(frameIdx int) {
 func (this *BufferPool) resetFrame(frameIdx int) {
 	this.pinCounts[frameIdx] = 0
 	this.dirtyFlags[frameIdx] = false
-	_ = this.frames[frameIdx].Header.ClearPinnedFlag()
-	_ = this.frames[frameIdx].Header.ClearDirtyFlag()
+	//TODO: Need to detect why this make panic
+	if this.frames[frameIdx] != nil {
+		_ = this.frames[frameIdx].Header.ClearPinnedFlag()
+		_ = this.frames[frameIdx].Header.ClearDirtyFlag()
+	}
+	// _ = this.frames[frameIdx].Header.ClearPinnedFlag()
+	// _ = this.frames[frameIdx].Header.ClearDirtyFlag()
+
 }

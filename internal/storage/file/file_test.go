@@ -2,9 +2,7 @@ package file_test
 
 import (
 	"bytes"
-	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/file"
@@ -13,30 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// createTempFile creates a temporary file with initial size and returns its path and cleanup function
-func createTempFile(t *testing.T, initialPages int) (string, func()) {
-	t.Helper()
-	tempDir := t.TempDir()
-	tempFile := filepath.Join(tempDir, fmt.Sprintf("arraydb-test-%d.dat", initialPages))
-	return tempFile, func() {
-		os.Remove(tempFile)
-	}
-}
-
 // Helper function to create a test page
-func createTestPage(pageID util.PageID, data []byte) *page.Page {
-	p := &page.Page{
-		Header: page.PageHeader{
-			PageID: pageID,
-			Flags:  0,
-		},
-	}
-	if len(data) > len(p.Data) {
-		data = data[:len(p.Data)] // Truncate to fit
-	}
-	copy(p.Data[:], data)
-	return p
-}
 
 // Helper to generate binary data for testing
 func generateBinaryData(size int) []byte {
@@ -88,7 +63,7 @@ func TestNewFileManager(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path, cleanup := createTempFile(t, tt.initialPages)
+			path, cleanup := util.CreateTempFile(t)
 			defer cleanup()
 
 			fm, err := file.NewFileManager(path, tt.initialPages)
@@ -180,7 +155,7 @@ func TestFileManagerReadWrite(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path, cleanup := createTempFile(t, tt.initialPages)
+			path, cleanup := util.CreateTempFile(t)
 			defer cleanup()
 
 			fm, err := file.NewFileManager(path, tt.initialPages)
@@ -192,7 +167,7 @@ func TestFileManagerReadWrite(t *testing.T) {
 			}
 			defer fm.Close()
 
-			p := createTestPage(tt.pageID, tt.data)
+			p := page.CreateTestPage(tt.pageID, tt.data)
 			p.Header.SetDirtyFlag()
 
 			if tt.prepareData != nil {
@@ -222,12 +197,4 @@ func TestFileManagerReadWrite(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Helper for min
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
