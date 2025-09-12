@@ -80,14 +80,22 @@ func (this *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
 	this.pageToIdx[pageId] = freeIdx
 	this.frames[freeIdx] = readPage
 
+	if err := this.addToTail(freeIdx); err != nil {
+		// Cleanup on LRU failure
+		delete(this.pageToIdx, pageId)
+		this.frames[freeIdx] = nil
+		this.returnFrameToFree(freeIdx)
+		return nil, err
+	}
+
 	return readPage, nil
 }
 
 /* PIN FRAME */
-func (this *BufferPool) PinFrame(pageId util.PageID) (*page.Page, error) {
+func (this *BufferPool) PinFrame(pageId util.PageID) error {
 	idx, ok := this.pageToIdx[pageId]
 	if !ok {
-		return nil, util.ErrPageNotFound
+		return util.ErrPageNotFound
 	}
 
 	this.pinCounts[idx]++
@@ -95,11 +103,7 @@ func (this *BufferPool) PinFrame(pageId util.PageID) (*page.Page, error) {
 		this.frames[idx].Header.SetPinnedFlag()
 	}
 
-	if err := this.moveToTail(idx); err != nil {
-		return nil, err
-	}
-
-	return this.frames[idx], nil
+	return nil
 }
 
 /* UNPIN FRAME */
@@ -170,7 +174,6 @@ func (this *BufferPool) removeFromHeadLRU() (int, error) {
 
 			if err := this.removeLRUByIndex(currentIdx); err != nil {
 				return -1, err
-
 			}
 			delete(this.pageToIdx, this.frames[currentIdx].Header.PageID)
 
@@ -181,17 +184,6 @@ func (this *BufferPool) removeFromHeadLRU() (int, error) {
 	}
 
 	return -1, util.ErrNoFreeFrame
-}
-
-func (this *BufferPool) moveToTail(frameIdx int) error {
-	if err := this.removeLRUByIndex(frameIdx); err != nil {
-		return err
-	}
-	if err := this.addToTail(frameIdx); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func (this *BufferPool) addToTail(frameIdx int) error {
@@ -278,12 +270,8 @@ func (this *BufferPool) returnFrameToFree(frameIdx int) {
 func (this *BufferPool) resetFrame(frameIdx int) {
 	this.pinCounts[frameIdx] = 0
 	this.dirtyFlags[frameIdx] = false
-	//TODO: Need to detect why this make panic
 	if this.frames[frameIdx] != nil {
 		_ = this.frames[frameIdx].Header.ClearPinnedFlag()
 		_ = this.frames[frameIdx].Header.ClearDirtyFlag()
 	}
-	// _ = this.frames[frameIdx].Header.ClearPinnedFlag()
-	// _ = this.frames[frameIdx].Header.ClearDirtyFlag()
-
 }
