@@ -8,270 +8,79 @@ import (
 	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
 )
 
+// BufferPool manages the buffer pool with a pluggable replacer.
 type BufferPool struct {
-	frames     []*page.Page        // Holds page.Page (4KB)
-	pageToIdx  map[util.PageID]int // Map the pageId to index
-	pinCounts  []int32
-	dirtyFlags []bool
-	nextFree   []int // Free list for allocation
-	nextLRU    []int // Forward links for LRU
-	prevLRU    []int // Backward links for LRU
-	freeHead   int   // Head of free list
-	lruHead    int   // Head of LRU (evict first)
-	lruTail    int   // Tail of LRU (most recent)
-	poolSize   int   // Total frames
-	fm         *file.FileManager
+	poolSize int               // Total frames
+	fm       *file.FileManager // File manager for I/O
+	rs       *ReplacerShared
+	replacer Replacer // Pluggable replacement policy
 }
 
-func NewBufferPool(size int, filer *file.FileManager) *BufferPool {
+// NewBufferPool initializes the buffer pool with a replacer.
+func NewBufferPool(size int, fm *file.FileManager, replacer Replacer, shared *ReplacerShared) *BufferPool {
 	if size <= 0 {
 		panic(util.ErrInvalidPoolSize)
 	}
-
-	bp := BufferPool{
-		frames:     make([]*page.Page, size),
-		pageToIdx:  make(map[util.PageID]int, size),
-		pinCounts:  make([]int32, size),
-		dirtyFlags: make([]bool, size),
-		nextFree:   make([]int, size),
-		nextLRU:    make([]int, size),
-		prevLRU:    make([]int, size),
-		freeHead:   0,
-		lruHead:    -1,
-		lruTail:    -1,
-		poolSize:   size,
-		fm:         filer,
+	bp := &BufferPool{
+		fm:       fm,
+		poolSize: size,
+		rs:       shared,
+		replacer: replacer,
 	}
 
-	for i := range size {
-		bp.nextFree[i] = i + 1
-		bp.dirtyFlags[i] = false
-		bp.nextLRU[i] = -1
-		bp.prevLRU[i] = -1
-	}
-	bp.nextFree[size-1] = -1
-
-	return &bp
+	return bp
 }
 
-/* ALLOCATE FRAME */
-func (this *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
-	if idx, ok := this.pageToIdx[pageId]; ok {
-		return this.frames[idx], nil
+// AllocateFrame delegates eviction to the replacer.
+func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
+	if idx, ok := bp.rs.pageToIdx[pageId]; ok {
+		return bp.replacer.GetPage(idx)
 	}
 
-	freeIdx := this.allocFromFree()
-	if freeIdx == -1 { // no free space
-		rmIdx, err := this.removeFromHeadLRU()
+	freeIdx := bp.rs.allocFromFree()
+	if freeIdx == -1 {
+		rmIdx, err := bp.replacer.Evict()
 		if err != nil {
 			return nil, err
 		}
 		freeIdx = rmIdx
 	}
 
-	this.resetFrame(freeIdx)
-
-	readPage, err := this.fm.ReadPage(pageId)
+	readPage, err := bp.fm.ReadPage(pageId)
 	if err != nil {
-		this.returnFrameToFree(freeIdx)
+		bp.rs.returnFrameToFree(freeIdx)
 		return nil, err
 	}
 
-	this.pageToIdx[pageId] = freeIdx
-	this.frames[freeIdx] = readPage
+	bp.rs.pageToIdx[pageId] = freeIdx
 
-	if err := this.addToTail(freeIdx); err != nil {
-		// Cleanup on LRU failure
-		delete(this.pageToIdx, pageId)
-		this.frames[freeIdx] = nil
-		this.returnFrameToFree(freeIdx)
-		return nil, err
+	if err := bp.replacer.PutPage(freeIdx, readPage); err != nil {
+		return nil, fmt.Errorf("[AllocateFrame] Put page fail: %w", err)
 	}
+
+	// NOTE: The pin should be managed explicitly by transations
+	// if err := bp.PinFrame(freeIdx); err != nil {
+	// 	bp.rs.removePageMapping(pageId)
+	// 	if err := bp.replacer.ResetFrameByIdx(freeIdx); err != nil {
+	// 		return nil, fmt.Errorf("[AllocateFrame] reset frame fail: %w", err)
+	// 	}
+	// 	bp.rs.returnFrameToFree(freeIdx)
+	// 	return nil, err
+	// }
 
 	return readPage, nil
 }
 
-/* PIN FRAME */
-func (this *BufferPool) PinFrame(pageId util.PageID) error {
-	idx, ok := this.pageToIdx[pageId]
-	if !ok {
-		return util.ErrPageNotFound
-	}
-
-	this.pinCounts[idx]++
-	if !this.frames[idx].Header.IsPinned() {
-		this.frames[idx].Header.SetPinnedFlag()
-	}
-
-	return nil
+// PinFrame delegates to replacer.
+func (bp *BufferPool) PinFrame(frameIdx int) error {
+	return bp.replacer.Pin(frameIdx)
 }
 
-/* UNPIN FRAME */
-func (this *BufferPool) UnpinFrame(pageId util.PageID, isDirty bool) error {
-	idx, ok := this.pageToIdx[pageId]
-	if !ok {
-		return util.ErrPageNotFound
-	}
-
-	if this.pinCounts[idx] <= 0 {
-		return util.ErrPageNotPinned
-	}
-
-	this.pinCounts[idx]--
-
-	if this.pinCounts[idx] == 0 {
-		_ = this.frames[idx].Header.ClearPinnedFlag()
-	}
-
-	if isDirty {
-		this.dirtyFlags[idx] = true
-		this.frames[idx].Header.SetDirtyFlag()
-	}
-
-	return nil
+// UnpinFrame delegates to replacer.
+func (bp *BufferPool) UnpinFrame(idx int, isDirty bool) error {
+	return bp.replacer.Unpin(idx, isDirty)
 }
 
-func (this *BufferPool) MarkDirty(pageId util.PageID) error {
-	idx, ok := this.pageToIdx[pageId]
-	if !ok {
-		return util.ErrPageNotFound
-	}
-
-	// Check if page is pinned (should be pinned to modify)
-	if this.pinCounts[idx] <= 0 {
-		return fmt.Errorf("cannot mark unpinned page %d as dirty", pageId)
-	}
-
-	// Mark as dirty
-	this.dirtyFlags[idx] = true
-	this.frames[idx].Header.SetDirtyFlag()
-
-	return nil
-}
-
-// ===================== HELPER FUNCTION =====================
-/* REMOVE HEAD LRU */
-func (this *BufferPool) removeFromHeadLRU() (int, error) {
-	if this.lruHead == -1 {
-		return -1, util.ErrNoFreeFrame // This mark empty LRU
-	}
-
-	currentIdx := this.lruHead
-	for currentIdx != -1 {
-		if this.pinCounts[currentIdx] == 0 && !this.frames[currentIdx].Header.IsPinned() {
-			// handle dirty pages
-			if this.dirtyFlags[currentIdx] {
-				if err := this.fm.WritePage(this.frames[currentIdx]); err != nil {
-					return -1, fmt.Errorf("[pool] [EvictFromLRU] flush failed: %w", err)
-				}
-
-				if err := this.frames[currentIdx].Header.ClearDirtyFlag(); err != nil {
-					return -1, fmt.Errorf("clear dirty failed: %w", err)
-				}
-
-				this.dirtyFlags[currentIdx] = false
-			}
-
-			if err := this.removeLRUByIndex(currentIdx); err != nil {
-				return -1, err
-			}
-			delete(this.pageToIdx, this.frames[currentIdx].Header.PageID)
-
-			return currentIdx, nil
-
-		}
-		currentIdx = this.nextLRU[currentIdx]
-	}
-
-	return -1, util.ErrNoFreeFrame
-}
-
-func (this *BufferPool) addToTail(frameIdx int) error {
-	if frameIdx >= this.poolSize || frameIdx < 0 {
-		return fmt.Errorf("[pool] [addToTail] frame index out of bound: %d", frameIdx)
-	}
-
-	tmp := this.lruTail
-	this.lruTail = frameIdx
-	this.prevLRU[frameIdx] = tmp
-	this.nextLRU[frameIdx] = -1
-
-	if tmp != -1 {
-		this.nextLRU[tmp] = frameIdx
-	}
-
-	if this.lruHead == -1 {
-		this.lruHead = frameIdx
-	}
-
-	return nil
-}
-
-func (this *BufferPool) removeLRUByIndex(frameIdx int) error {
-	if frameIdx >= this.poolSize || frameIdx < 0 {
-		return fmt.Errorf("[pool] [removeFromLRU] frame index out of bound: %d", frameIdx)
-	}
-
-	if this.lruHead == -1 || (this.nextLRU[frameIdx] == -1 && this.prevLRU[frameIdx] == -1 && this.lruHead != frameIdx) {
-		return fmt.Errorf("[pool] [removeFromLRU] frame index %d is invalid ", frameIdx)
-	}
-
-	prev := this.prevLRU[frameIdx]
-	next := this.nextLRU[frameIdx]
-	isHead := (prev == -1)
-	isTail := (next == -1)
-
-	switch {
-	case isHead && isTail:
-		// Case 1: Single node (both head and tail)
-		this.lruHead = -1
-		this.lruTail = -1
-	case isHead && !isTail:
-		// Case 2: Head node (has next, no prev)
-		this.lruHead = next
-		this.prevLRU[next] = -1
-	case !isHead && isTail:
-		// Case 3: Tail node (has prev, no next)
-		this.lruTail = prev
-		this.nextLRU[prev] = -1
-	case !isHead && !isTail:
-		// Case 4: Middle node (has both prev and next)
-		this.nextLRU[prev] = next
-		this.prevLRU[next] = prev
-	default:
-		// This should never happen due to validation above
-		panic(fmt.Sprintf("[pool] [removeFromLRU] unexpected state for frame %d", frameIdx))
-	}
-
-	// Clear the removed node's links
-	this.nextLRU[frameIdx] = -1
-	this.prevLRU[frameIdx] = -1
-
-	return nil
-}
-
-func (this *BufferPool) allocFromFree() int {
-	if this.freeHead == -1 {
-		return -1
-	}
-
-	freeIdx := this.freeHead
-	this.freeHead = this.nextFree[freeIdx]
-	this.nextFree[freeIdx] = -1
-
-	return freeIdx
-}
-
-func (this *BufferPool) returnFrameToFree(frameIdx int) {
-	this.nextFree[frameIdx] = this.freeHead
-	this.freeHead = frameIdx
-}
-
-func (this *BufferPool) resetFrame(frameIdx int) {
-	this.pinCounts[frameIdx] = 0
-	this.dirtyFlags[frameIdx] = false
-	if this.frames[frameIdx] != nil {
-		_ = this.frames[frameIdx].Header.ClearPinnedFlag()
-		_ = this.frames[frameIdx].Header.ClearDirtyFlag()
-	}
+func (bp *BufferPool) MarkDirty(idx int) error {
+	return bp.replacer.Dirty(idx)
 }
