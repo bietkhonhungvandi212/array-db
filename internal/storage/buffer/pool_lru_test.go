@@ -41,21 +41,21 @@ func TestNewBufferPool(t *testing.T) {
 		assert.NotNil(t, bp.rs, "replacer shared")
 
 		// Test ReplacerShared state
-		assert.Equal(t, size, len(shared.nextFree), "nextFree length")
-		assert.Equal(t, 0, shared.freeHead, "freeHead should be at first index 0")
-		assert.Equal(t, -1, shared.lruHead, "lruHead should be -1")
-		assert.Equal(t, -1, shared.lruTail, "lruTail should be -1")
-		assert.Equal(t, size, shared.poolSize, "shared pool size")
+		assert.Equal(t, size, len(replacer.nextFree), "nextFree length")
+		assert.Equal(t, 0, replacer.freeHead, "freeHead should be at first index 0")
+		assert.Equal(t, -1, replacer.lruHead, "lruHead should be -1")
+		assert.Equal(t, -1, replacer.lruTail, "lruTail should be -1")
+		assert.Equal(t, size, replacer.poolSize, "replacer pool size")
 
 		// Test LRU replacer state
 		assert.Equal(t, size, len(replacer.frames), "frames length")
 		assert.Equal(t, size, replacer.Size(), "replacer size")
 
 		// Free list: 0→1→...→size-1→-1
-		idx := shared.freeHead
+		idx := replacer.freeHead
 		for i := 0; i < size; i++ {
 			assert.Equal(t, i, idx, "free list at %d", i)
-			idx = shared.nextFree[idx]
+			idx = replacer.nextFree[idx]
 		}
 		assert.Equal(t, -1, idx, "free list end")
 
@@ -92,25 +92,12 @@ func TestNewBufferPool(t *testing.T) {
 		replacer.Init(size, shared)
 		bp := NewBufferPool(size, fm, replacer, shared)
 
-		assert.Equal(t, 0, shared.freeHead, "freeHead")
-		assert.Equal(t, -1, shared.nextFree[0], "nextFree[0]")
-		assert.Equal(t, -1, shared.lruHead, "lruHead should be -1")
-		assert.Equal(t, -1, shared.lruTail, "lruTail should be -1")
+		assert.Equal(t, 0, replacer.freeHead, "freeHead")
+		assert.Equal(t, -1, replacer.nextFree[0], "nextFree[0]")
+		assert.Equal(t, -1, replacer.lruHead, "lruHead should be -1")
+		assert.Equal(t, -1, replacer.lruTail, "lruTail should be -1")
 		assert.Equal(t, size, bp.poolSize, "pool size")
 	})
-}
-
-// Helper functions for resetting state
-
-func resetReplacerShared(shared *ReplacerShared) {
-	// Clear page mappings
-	shared.pageToIdx = make(map[util.PageID]int)
-	// Reset free list
-	shared.freeHead = 0
-	for i := 0; i < shared.poolSize; i++ {
-		shared.nextFree[i] = i + 1
-	}
-	shared.nextFree[shared.poolSize-1] = -1
 }
 
 func TestAllocateFrame(t *testing.T) {
@@ -122,7 +109,8 @@ func TestAllocateFrame(t *testing.T) {
 
 	// Create shared state and LRU replacer
 	shared := NewReplacerShared(3)
-	replacer := NewLRUReplacer(3, shared)
+	replacer := &LRUReplacer{}
+	replacer.Init(3, shared)
 	bp := NewBufferPool(3, fm, replacer, shared)
 
 	// Create test pages on disk first
@@ -138,7 +126,6 @@ func TestAllocateFrame(t *testing.T) {
 	t.Run("AllocateFrame_CacheHit", func(t *testing.T) {
 		// Reset state
 		replacer.ResetBuffer()
-		resetReplacerShared(shared)
 
 		// First allocation - cache miss
 		page1, err := bp.AllocateFrame(0)
@@ -167,7 +154,6 @@ func TestAllocateFrame(t *testing.T) {
 	t.Run("AllocateFrame_FreeFrames", func(t *testing.T) {
 		// Reset state
 		replacer.ResetBuffer()
-		resetReplacerShared(shared)
 
 		// Allocate pages to fill buffer pool (size=3)
 		for i := 0; i < 3; i++ {
@@ -187,16 +173,15 @@ func TestAllocateFrame(t *testing.T) {
 
 		// Verify buffer pool is full
 		assert.Equal(t, 3, len(shared.pageToIdx), "buffer pool should be full")
-		assert.Equal(t, -1, shared.allocFromFree(), "no free frames left")
-		assert.Equal(t, bp.rs.lruHead, 0, "lruHead should be at index 0")
-		assert.Equal(t, bp.rs.lruTail, 2, "lruTail should be at index 2")
-		assert.Equal(t, bp.rs.freeHead, -1, "freeHead should be empty and -1")
+		assert.Equal(t, -1, replacer.allocFromFree(), "no free frames left")
+		assert.Equal(t, replacer.lruHead, 0, "lruHead should be at index 0")
+		assert.Equal(t, replacer.lruTail, 2, "lruTail should be at index 2")
+		assert.Equal(t, replacer.freeHead, -1, "freeHead should be empty and -1")
 	})
 
 	t.Run("AllocateFrame_EvictionRequired", func(t *testing.T) {
 		// Reset state
 		replacer.ResetBuffer()
-		resetReplacerShared(shared)
 
 		// Fill buffer pool and establish LRU order
 		for i := util.PageID(0); i < 3; i++ {
@@ -208,8 +193,8 @@ func TestAllocateFrame(t *testing.T) {
 		// Verify LRU order: 0 (head) ↔ 1 ↔ 2 (tail)
 		frameIdx0 := shared.pageToIdx[0]
 		frameIdx2 := shared.pageToIdx[2]
-		assert.Equal(t, frameIdx0, shared.lruHead, "page 0 should be LRU head")
-		assert.Equal(t, frameIdx2, shared.lruTail, "page 2 should be LRU tail")
+		assert.Equal(t, frameIdx0, replacer.lruHead, "page 0 should be LRU head")
+		assert.Equal(t, frameIdx2, replacer.lruTail, "page 2 should be LRU tail")
 
 		// Allocate new page - should evict page 0 (LRU head)
 		page3, err := bp.AllocateFrame(3)
@@ -230,17 +215,16 @@ func TestAllocateFrame(t *testing.T) {
 		storedPage3, err := replacer.GetPage(frameIdx3)
 		assert.NoError(t, err, "get page 3 from replacer")
 		assert.Equal(t, page3, storedPage3, "page 3 in replacer frames")
-		assert.Equal(t, frameIdx3, shared.lruTail, "lruTail should point to page 3")
+		assert.Equal(t, frameIdx3, replacer.lruTail, "lruTail should point to page 3")
 
 		// Verify other pages still in buffer
 		assert.Contains(t, shared.pageToIdx, util.PageID(1), "page 1 still in buffer")
 		frameIdx1 := shared.pageToIdx[1]
-		assert.Equal(t, frameIdx1, shared.lruHead, "lruHead should point to page 1")
+		assert.Equal(t, frameIdx1, replacer.lruHead, "lruHead should point to page 1")
 		assert.Contains(t, shared.pageToIdx, util.PageID(2), "page 2 still in buffer")
 	})
 	t.Run("AllocateFrame_DiskReadError", func(t *testing.T) {
 		replacer.ResetBuffer()
-		resetReplacerShared(shared)
 
 		// Try to read non-existent page
 		page, err := bp.AllocateFrame(999)
@@ -252,13 +236,12 @@ func TestAllocateFrame(t *testing.T) {
 		assert.False(t, exists, "failed page should not be in buffer")
 
 		// Verify free frame was returned
-		assert.Equal(t, 0, bp.rs.freeHead, "free frame should be available")
-		assert.Equal(t, -1, shared.lruHead, "lruHead should be kept -1")
-		assert.Equal(t, -1, shared.lruTail, "lruTail should be kept -1")
+		assert.Equal(t, 0, replacer.freeHead, "free frame should be available")
+		assert.Equal(t, -1, replacer.lruHead, "lruHead should be kept -1")
+		assert.Equal(t, -1, replacer.lruTail, "lruTail should be kept -1")
 	})
 	t.Run("AllocateFrame_EvictionError", func(t *testing.T) {
 		replacer.ResetBuffer()
-		resetReplacerShared(shared)
 
 		// Fill buffer pool
 		for i := util.PageID(0); i < 3; i++ {
@@ -281,7 +264,6 @@ func TestAllocateFrame(t *testing.T) {
 	})
 	t.Run("AllocateFrame_DataIntegrity", func(t *testing.T) {
 		replacer.ResetBuffer()
-		resetReplacerShared(shared)
 
 		// Allocate page and verify data content
 		page0, err := bp.AllocateFrame(0)
@@ -306,7 +288,6 @@ func TestAllocateFrame(t *testing.T) {
 
 	t.Run("AllocateFrame_FrameReset", func(t *testing.T) {
 		replacer.ResetBuffer()
-		resetReplacerShared(shared)
 
 		// Allocate a page
 		_, err := bp.AllocateFrame(1)
@@ -321,7 +302,7 @@ func TestAllocateFrame(t *testing.T) {
 
 		// Remove from buffer manually to test frame reset
 		delete(bp.rs.pageToIdx, 1)
-		bp.rs.returnFrameToFree(frameIdx)
+		replacer.returnFrameToFree(frameIdx)
 
 		// Allocate different page to same frame
 		page2, err := bp.AllocateFrame(2)

@@ -37,18 +37,13 @@ func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
 		return bp.replacer.GetPage(idx)
 	}
 
-	freeIdx := bp.rs.allocFromFree()
-	if freeIdx == -1 {
-		rmIdx, err := bp.replacer.Evict()
-		if err != nil {
-			return nil, err
-		}
-		freeIdx = rmIdx
-	}
-
 	readPage, err := bp.fm.ReadPage(pageId)
 	if err != nil {
-		bp.rs.returnFrameToFree(freeIdx)
+		return nil, err
+	}
+
+	freeIdx, err := bp.replacer.RequestFrame()
+	if err != nil {
 		return nil, err
 	}
 

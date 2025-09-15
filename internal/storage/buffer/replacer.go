@@ -6,8 +6,8 @@ import "github.com/bietkhonhungvandi212/array-db/internal/storage/page"
 type Replacer interface {
 	// Init initializes the replacer with shared state and additional policy-specific data.
 	Init(size int, replacerShared *ReplacerShared)
-	// Evict selects and returns an evictable frame index, or error if none.
-	Evict() (int, error)
+	// Request a frame for allocating and evict if needed. returns an evictable frame index, or error if none.
+	RequestFrame() (int, error)
 	Pin(frameIdx int) error
 	Unpin(frameIdx int, isDirty bool) error
 	GetPinCount(frameIdx int) (int32, error)

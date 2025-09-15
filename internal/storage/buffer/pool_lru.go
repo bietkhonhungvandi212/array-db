@@ -20,6 +20,10 @@ type LRUElement struct {
 type LRUReplacer struct {
 	frames []*LRUElement // Holds page.Page (4KB)
 	*ReplacerShared
+	lruHead  int   // Head of LRU (evict first)
+	lruTail  int   // Tail of LRU (most recent)
+	nextFree []int // Free list for allocation
+	freeHead int   // Head of free list
 }
 
 func NewLRUReplacer(size int, shared *ReplacerShared) Replacer {
@@ -36,22 +40,28 @@ func (lr *LRUReplacer) Init(size int, replacerShared *ReplacerShared) {
 
 	lr.frames = make([]*LRUElement, size)
 	lr.ReplacerShared = replacerShared
+	lr.lruHead = -1
+	lr.lruTail = -1
+	lr.nextFree = make([]int, size)
+
+	lr.freeHead = 0
+	for i := 0; i < size; i++ {
+		lr.nextFree[i] = i + 1
+	}
+	lr.nextFree[size-1] = -1
 }
 
-func (lr *LRUReplacer) Evict() (int, error) {
-	current := lr.lruHead
-	for current != -1 {
-		node := lr.frames[current]
-		if atomic.LoadInt32(&node.pinCounts) == 0 {
-			if err := lr.removeLRUByIndex(current); err != nil {
-				return -1, err
-			}
-			lr.removePageMapping(node.page.Header.PageID)
-			return current, nil
+func (lr *LRUReplacer) RequestFrame() (int, error) {
+	freeIdx := lr.allocFromFree()
+	if freeIdx == -1 {
+		rmIdx, err := lr.Evict()
+		if err != nil {
+			return -1, err
 		}
-		current = node.nextIdx
+		freeIdx = rmIdx
 	}
-	return -1, errors.New("[Evict LRU] no evictable frame")
+
+	return freeIdx, nil
 }
 
 // Pin marks a frame as pinned (cannot be evicted)
@@ -173,6 +183,15 @@ func (this *LRUReplacer) ResetBuffer() {
 	for i := 0; i < this.Size(); i++ {
 		this.frames[i] = nil
 	}
+
+	// Clear page mappings
+	this.pageToIdx = make(map[util.PageID]int)
+	// Reset free list
+	this.freeHead = 0
+	for i := 0; i < this.poolSize; i++ {
+		this.nextFree[i] = i + 1
+	}
+	this.nextFree[this.poolSize-1] = -1
 	// Reset LRU state
 	this.lruHead = -1
 	this.lruTail = -1
@@ -239,4 +258,37 @@ func (lr *LRUReplacer) removeLRUByIndex(frameIdx int) error {
 	node.nextIdx = -1
 	node.prevIdx = -1
 	return nil
+}
+
+// allocFromFree allocates a free frame index.
+func (lr *LRUReplacer) allocFromFree() int {
+	if lr.freeHead == -1 {
+		return -1
+	}
+	freeIdx := lr.freeHead
+	lr.freeHead = lr.nextFree[freeIdx]
+	lr.nextFree[freeIdx] = -1
+	return freeIdx
+}
+
+// returnFrameToFree returns a frame to the free list.
+func (lr *LRUReplacer) returnFrameToFree(frameIdx int) {
+	lr.nextFree[frameIdx] = lr.freeHead
+	lr.freeHead = frameIdx
+}
+
+func (lr *LRUReplacer) Evict() (int, error) {
+	current := lr.lruHead
+	for current != -1 {
+		node := lr.frames[current]
+		if atomic.LoadInt32(&node.pinCounts) == 0 {
+			if err := lr.removeLRUByIndex(current); err != nil {
+				return -1, err
+			}
+			lr.removePageMapping(node.page.Header.PageID)
+			return current, nil
+		}
+		current = node.nextIdx
+	}
+	return -1, errors.New("[Evict LRU] no evictable frame")
 }
