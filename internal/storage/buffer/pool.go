@@ -42,7 +42,7 @@ func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
 		return nil, err
 	}
 
-	freeIdx, err := bp.replacer.RequestFrame()
+	freeIdx, err := bp.replacer.RequestFree()
 	if err != nil {
 		return nil, err
 	}

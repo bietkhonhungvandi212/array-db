@@ -9,7 +9,7 @@ import (
 	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
 )
 
-type LRUElement struct {
+type LRUDesc struct {
 	page      *page.Page
 	nextIdx   int
 	prevIdx   int
@@ -18,7 +18,7 @@ type LRUElement struct {
 }
 
 type LRUReplacer struct {
-	frames []*LRUElement // Holds page.Page (4KB)
+	frames []*LRUDesc // Holds page.Page (4KB)
 	*ReplacerShared
 	lruHead  int   // Head of LRU (evict first)
 	lruTail  int   // Tail of LRU (most recent)
@@ -26,19 +26,12 @@ type LRUReplacer struct {
 	freeHead int   // Head of free list
 }
 
-func NewLRUReplacer(size int, shared *ReplacerShared) Replacer {
-	replacer := &LRUReplacer{}
-	replacer.Init(size, shared)
-
-	return replacer
-}
-
 func (lr *LRUReplacer) Init(size int, replacerShared *ReplacerShared) {
 	if size <= 0 {
 		panic(util.ErrInvalidPoolSize)
 	}
 
-	lr.frames = make([]*LRUElement, size)
+	lr.frames = make([]*LRUDesc, size)
 	lr.ReplacerShared = replacerShared
 	lr.lruHead = -1
 	lr.lruTail = -1
@@ -51,7 +44,7 @@ func (lr *LRUReplacer) Init(size int, replacerShared *ReplacerShared) {
 	lr.nextFree[size-1] = -1
 }
 
-func (lr *LRUReplacer) RequestFrame() (int, error) {
+func (lr *LRUReplacer) RequestFree() (int, error) {
 	freeIdx := lr.allocFromFree()
 	if freeIdx == -1 {
 		rmIdx, err := lr.Evict()
@@ -200,7 +193,7 @@ func (this *LRUReplacer) ResetBuffer() {
 func (lr *LRUReplacer) addToTail(frameIdx int, page *page.Page) error {
 	tmp := lr.lruTail
 	lr.lruTail = frameIdx
-	node := &LRUElement{
+	node := &LRUDesc{
 		page:      page,
 		prevIdx:   tmp,
 		nextIdx:   -1,
