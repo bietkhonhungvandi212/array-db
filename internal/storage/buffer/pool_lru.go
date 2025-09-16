@@ -113,30 +113,6 @@ func (this *LRUReplacer) PutPage(frameIdx int, page *page.Page) error {
 	return this.addToTail(frameIdx, page)
 }
 
-func (this *LRUReplacer) ResetFrameByIdx(frameIdx int) error {
-	if frameIdx >= this.poolSize || frameIdx < 0 {
-		return fmt.Errorf("invalid frame index %d", frameIdx)
-	}
-
-	node := this.frames[frameIdx]
-	if node == nil {
-		return nil
-	}
-
-	// If removal fails, it might not be in the LRU list, which is ok
-	// Continue with reset
-	_ = this.removeLRUByIndex(frameIdx)
-
-	// Clear the frame
-	this.frames[frameIdx] = nil
-
-	return nil
-}
-
-func (lr *LRUReplacer) Size() int {
-	return lr.poolSize
-}
-
 func (lr *LRUReplacer) GetPinCount(frameIdx int) (int32, error) {
 	if frameIdx >= lr.poolSize || frameIdx < 0 {
 		return -1, fmt.Errorf("invalid frame index %d", frameIdx)
@@ -278,6 +254,7 @@ func (lr *LRUReplacer) Evict() (int, error) {
 			if err := lr.removeLRUByIndex(current); err != nil {
 				return -1, err
 			}
+			// TODO: Flush the dirty page
 			lr.removePageMapping(node.page.Header.PageID)
 			return current, nil
 		}

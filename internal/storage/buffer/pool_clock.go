@@ -5,20 +5,22 @@ import (
 	"fmt"
 	"sync/atomic"
 
+	"github.com/bietkhonhungvandi212/array-db/internal/storage/file"
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/page"
+	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
 )
 
 type ClockDesc struct {
-	page       *page.Page
-	usageCount int32 //TODO: shoud have the max usage for efficient clock hand
+	page       atomic.Pointer[page.Page]
+	usageCount int32 // TODO: shoud have the max usage for efficient clock hand
 	refCount   int32
-	dirty      int32
+	dirty      atomic.Bool
 }
 
 type ClockReplacer struct {
 	frames []*ClockDesc // Holds page.Page (4KB)
 	*ReplacerShared
-	nextVictimIdx int
+	nextVictimIdx int32
 	maxLoop       int
 }
 
@@ -28,28 +30,50 @@ func (this *ClockReplacer) Init(size int, maxLoop int, replacerShared *ReplacerS
 	this.nextVictimIdx = 0
 	this.maxLoop = maxLoop
 
+	for i := 0; i < size; i++ {
+		this.frames[i] = &ClockDesc{
+			usageCount: 0,
+			refCount:   0,
+			dirty:      atomic.Bool{},
+		}
+	}
 }
 
-func (this *ClockReplacer) RequestFrame() (int, error) {
-	var victimIdx int
-	for range this.maxLoop * 2 {
-		victimIdx = this.nextVictimIdx
-		if this.frames[victimIdx] == nil {
-			this.nextVictimIdx = (this.nextVictimIdx + 1) % this.poolSize
-			return victimIdx, nil
-		}
+func (this *ClockReplacer) RequestFrame(fm *file.FileManager) (int, error) {
+	poolSize := int32(this.poolSize)
+	for range poolSize * int32(this.maxLoop) {
+		// Atomically advance clock hand and get current position
+		victimIdx := atomic.AddInt32(&this.nextVictimIdx, 1) % poolSize
 
 		desc := this.frames[victimIdx]
-		if !desc.page.Header.IsPinned() {
-			if desc.usageCount == 0 {
-				this.nextVictimIdx = (this.nextVictimIdx + 1) % this.poolSize
-				return victimIdx, nil
-			} else {
-				desc.usageCount--
+		refCount := atomic.LoadInt32(&desc.refCount)
+
+		if refCount != 0 {
+			continue
+		}
+
+		usageCount := atomic.LoadInt32(&desc.usageCount)
+		if usageCount > 0 {
+			atomic.AddInt32(&desc.usageCount, -1)
+			continue
+		}
+
+		// Successfully claimed the frame, now we can safely write it
+		dirty := desc.dirty.Load()
+		if dirty {
+			page := desc.page.Load()
+			desc.dirty.Store(false)
+			if err := fm.WritePage(page); err != nil {
+				desc.dirty.Store(true) // rollback
+				return -1, err
 			}
 		}
 
-		this.nextVictimIdx = (this.nextVictimIdx + 1) % this.poolSize
+		// Frame is now clean and claimed for reuse
+		// Final recheck: Ensure still unpinned and not re-dirtied
+		if atomic.LoadInt32(&desc.refCount) == 0 && !desc.dirty.Load() {
+			return int(victimIdx), nil
+		}
 	}
 
 	return -1, errors.New("can not find the victim with maxLoop")
@@ -61,19 +85,32 @@ func (this *ClockReplacer) Pin(frameIdx int) error {
 	}
 
 	node := this.frames[frameIdx]
-	if node == nil {
+	page := node.page.Load()
+	if page == nil {
 		return fmt.Errorf("frame %d is not allocated", frameIdx)
 	}
 
-	newCount := atomic.AddInt32(&node.refCount, 1)
-	if newCount == 1 {
-		if node.page.Header.IsPinned() {
-			return errors.New("the page have been pinned")
+	for {
+		current := atomic.LoadInt32(&node.refCount)
+		var newVal int32
+
+		if current >= 0 {
+			newVal = current + 1
+		} else {
+			return fmt.Errorf("invalid refCount state: %d", current)
 		}
-		node.page.Header.SetPinnedFlag()
+
+		if atomic.CompareAndSwapInt32(&node.refCount, current, newVal) {
+			// Successfully updated, now handle page header
+			if newVal == 1 {
+				page.Header.SetPinnedFlag()
+			}
+			break
+		}
+		// CAS failed, retry
 	}
 
-	if atomic.LoadInt32(&node.usageCount) < int32(this.maxLoop) {
+	if current := atomic.LoadInt32(&node.usageCount); current < int32(this.maxLoop) {
 		atomic.AddInt32(&node.usageCount, 1)
 	}
 	return nil
@@ -85,17 +122,27 @@ func (this *ClockReplacer) Unpin(frameIdx int, isDirty bool) error {
 	}
 
 	node := this.frames[frameIdx]
-	if node == nil {
+	page := node.page.Load()
+	if page == nil {
 		return fmt.Errorf("frame %d is not allocated", frameIdx)
 	}
 
-	newCount := atomic.AddInt32(&node.refCount, -1)
-	if newCount == 0 {
-		if !node.page.Header.IsPinned() {
-			return errors.New("the page have been unpinned")
-		}
+	// Handle dirty flag first (while still pinned)
+	if isDirty {
+		node.dirty.Store(true)
+		page.Header.SetDirtyFlag()
+	}
 
-		node.page.Header.ClearPinnedFlag()
+	// Atomically decrement reference count
+	newCount := atomic.AddInt32(&node.refCount, -1)
+	if newCount < 0 {
+		// Restore count and return error - negative counts are invalid here
+		atomic.AddInt32(&node.refCount, 1)
+		return fmt.Errorf("frame %d was not pinned (refCount was %d)", frameIdx, newCount+1)
+	}
+
+	if newCount == 0 {
+		_ = page.Header.ClearPinnedFlag()
 	}
 
 	return nil
@@ -106,42 +153,30 @@ func (this *ClockReplacer) GetPinCount(frameIdx int) (int32, error) {
 		return 0, fmt.Errorf("invalid frame index %d", frameIdx)
 	}
 
-	return this.frames[frameIdx].refCount, nil
+	return atomic.LoadInt32(&this.frames[frameIdx].refCount), nil
 }
 
-func (this *ClockReplacer) Dirty(frameIdx int) error {
+func (this *ClockReplacer) GetPage(frameIdx int) (*page.Page, error) {
+	node := this.frames[frameIdx]
+	if node == nil {
+		return nil, util.ErrPageIdExistedInBuffer
+	}
+
+	return node.page.Load(), nil
+}
+
+func (this *ClockReplacer) PutPage(frameIdx int, page *page.Page) error {
 	if frameIdx >= this.poolSize || frameIdx < 0 {
 		return fmt.Errorf("invalid frame index %d", frameIdx)
 	}
 
-	node := this.frames[frameIdx]
-	if node == nil {
-		return fmt.Errorf("frame %d is not allocated", frameIdx)
+	desc := &ClockDesc{
+		usageCount: 0,
+		refCount:   0,
+		dirty:      atomic.Bool{},
 	}
-
-	if atomic.LoadInt32(&node.dirty) == 0 {
-		if node.page.Header.IsDirty() {
-			return errors.New("the page have been dirty")
-		}
-
-		atomic.AddInt32(&node.dirty, 1)
-		node.page.Header.SetDirtyFlag()
-	}
+	desc.page.Store(page)
+	this.frames[frameIdx] = desc
 
 	return nil
 }
-
-func (this *ClockReplacer) IsDirty(frameIdx int) (bool, error) {
-	if frameIdx >= this.poolSize || frameIdx < 0 {
-		return false, fmt.Errorf("invalid frame index %d", frameIdx)
-	}
-	node := this.frames[frameIdx]
-
-	return atomic.LoadInt32(&node.dirty) != 0, nil
-}
-
-// GetPage(frameIdx int) (*page.Page, error)
-// PutPage(frameIdx int, page *page.Page) error
-// ResetFrameByIdx(frameIdx int) error
-// Size() int
-// ResetBuffer() // for testing purpose

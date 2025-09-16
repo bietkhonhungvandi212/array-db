@@ -9,11 +9,7 @@ type Replacer interface {
 	Pin(frameIdx int) error
 	Unpin(frameIdx int, isDirty bool) error
 	GetPinCount(frameIdx int) (int32, error)
-	Dirty(frameIdx int) error
-	IsDirty(frameIdx int) (bool, error)
 	GetPage(frameIdx int) (*page.Page, error)
 	PutPage(frameIdx int, page *page.Page) error
-	ResetFrameByIdx(frameIdx int) error
-	Size() int
 	ResetBuffer() // for testing purpose
 }

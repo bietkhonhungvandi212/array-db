@@ -75,7 +75,3 @@ func (bp *BufferPool) PinFrame(frameIdx int) error {
 func (bp *BufferPool) UnpinFrame(idx int, isDirty bool) error {
 	return bp.replacer.Unpin(idx, isDirty)
 }
-
-func (bp *BufferPool) MarkDirty(idx int) error {
-	return bp.replacer.Dirty(idx)
-}

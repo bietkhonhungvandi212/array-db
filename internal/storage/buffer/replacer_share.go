@@ -30,3 +30,7 @@ func (rs *ReplacerShared) removePageMapping(pageId util.PageID) {
 func (rs *ReplacerShared) getMap() map[util.PageID]int {
 	return rs.pageToIdx
 }
+
+func (lr *LRUReplacer) Size() int {
+	return lr.poolSize
+}

@@ -297,8 +297,6 @@ func TestAllocateFrame(t *testing.T) {
 		// Manually dirty the frame
 		errPin1 := bp.PinFrame(frameIdx)
 		assert.NoError(t, errPin1, "Pin for page 1 should not err")
-		errDir1 := bp.MarkDirty(frameIdx)
-		assert.NoError(t, errDir1, "Mark dirty for page 1 should not err")
 
 		// Remove from buffer manually to test frame reset
 		delete(bp.rs.pageToIdx, 1)
@@ -317,11 +315,6 @@ func TestAllocateFrame(t *testing.T) {
 		}
 
 		assert.Equal(t, int32(0), count, "pin count reset")
-		dirty, errDir := bp.replacer.IsDirty(newFrameIdx)
-		if errDir != nil {
-			assert.NoError(t, errDir, "get dirty should not return error")
-		}
-		assert.False(t, dirty, "dirty flag reset")
 		assert.False(t, page2.Header.IsPinned(), "page header pin flag reset")
 		assert.False(t, page2.Header.IsDirty(), "page header dirty flag reset")
 	})
