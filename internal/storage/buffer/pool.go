@@ -2,6 +2,7 @@ package buffer
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/file"
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/page"
@@ -14,6 +15,8 @@ type BufferPool struct {
 	fm       *file.FileManager // File manager for I/O
 	rs       *ReplacerShared
 	replacer Replacer // Pluggable replacement policy
+
+	muTable sync.RWMutex // Lock table lookup
 }
 
 // NewBufferPool initializes the buffer pool with a replacer.
@@ -33,7 +36,9 @@ func NewBufferPool(size int, fm *file.FileManager, replacer Replacer, shared *Re
 
 // AllocateFrame delegates eviction to the replacer.
 func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
+	bp.muTable.RLock()
 	if idx, ok := bp.rs.pageToIdx[pageId]; ok {
+		bp.muTable.RUnlock()
 		return bp.replacer.GetPage(idx)
 	}
 
@@ -42,36 +47,21 @@ func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
 		return nil, err
 	}
 
-	freeIdx, err := bp.replacer.RequestFree()
+	idx, err := bp.replacer.RequestFree(readPage, bp.fm)
 	if err != nil {
 		return nil, err
 	}
-
-	bp.rs.pageToIdx[pageId] = freeIdx
-
-	if err := bp.replacer.PutPage(freeIdx, readPage); err != nil {
-		return nil, fmt.Errorf("[AllocateFrame] Put page fail: %w", err)
-	}
-
-	// NOTE: The pin should be managed explicitly by transations
-	// if err := bp.PinFrame(freeIdx); err != nil {
-	// 	bp.rs.removePageMapping(pageId)
-	// 	if err := bp.replacer.ResetFrameByIdx(freeIdx); err != nil {
-	// 		return nil, fmt.Errorf("[AllocateFrame] reset frame fail: %w", err)
-	// 	}
-	// 	bp.rs.returnFrameToFree(freeIdx)
-	// 	return nil, err
-	// }
+	fmt.Println(idx)
 
 	return readPage, nil
 }
 
 // PinFrame delegates to replacer.
-func (bp *BufferPool) PinFrame(frameIdx int) error {
-	return bp.replacer.Pin(frameIdx)
+func (bp *BufferPool) PinFrame(pageId util.PageID) error {
+	return bp.replacer.Pin(pageId)
 }
 
 // UnpinFrame delegates to replacer.
-func (bp *BufferPool) UnpinFrame(idx int, isDirty bool) error {
-	return bp.replacer.Unpin(idx, isDirty)
+func (bp *BufferPool) UnpinFrame(pageId util.PageID, isDirty bool) error {
+	return bp.replacer.Unpin(pageId, isDirty)
 }

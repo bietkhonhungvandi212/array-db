@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
+	"github.com/bietkhonhungvandi212/array-db/internal/storage/file"
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/page"
 	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
 )
@@ -44,7 +45,7 @@ func (lr *LRUReplacer) Init(size int, replacerShared *ReplacerShared) {
 	lr.nextFree[size-1] = -1
 }
 
-func (lr *LRUReplacer) RequestFree() (int, error) {
+func (lr *LRUReplacer) RequestFree(page *page.Page, fm *file.FileManager) (int, error) {
 	freeIdx := lr.allocFromFree()
 	if freeIdx == -1 {
 		rmIdx, err := lr.Evict()
@@ -54,11 +55,21 @@ func (lr *LRUReplacer) RequestFree() (int, error) {
 		freeIdx = rmIdx
 	}
 
+	lr.pageToIdx[page.Header.PageID] = freeIdx
+	if err := lr.putPage(freeIdx, page); err != nil {
+		return -1, fmt.Errorf("[LRU RequestFree] Put page fail: %w", err)
+	}
+
 	return freeIdx, nil
 }
 
 // Pin marks a frame as pinned (cannot be evicted)
-func (lr *LRUReplacer) Pin(frameIdx int) error {
+func (lr *LRUReplacer) Pin(pageId util.PageID) error {
+	frameIdx, exist := lr.pageToIdx[pageId]
+	if !exist {
+		return util.ErrPageNotFound
+	}
+
 	if frameIdx >= lr.poolSize || frameIdx < 0 {
 		return fmt.Errorf("invalid frame index %d", frameIdx)
 	}
@@ -75,7 +86,11 @@ func (lr *LRUReplacer) Pin(frameIdx int) error {
 }
 
 // Unpin marks a frame as unpinned (can be evicted) and optionally dirty
-func (lr *LRUReplacer) Unpin(frameIdx int, isDirty bool) error {
+func (lr *LRUReplacer) Unpin(pageId util.PageID, isDirty bool) error {
+	frameIdx, exist := lr.pageToIdx[pageId]
+	if !exist {
+		return util.ErrPageNotFound
+	}
 	if frameIdx >= lr.poolSize || frameIdx < 0 {
 		return fmt.Errorf("invalid frame index %d", frameIdx)
 	}
@@ -105,46 +120,12 @@ func (this *LRUReplacer) GetPage(frameIdx int) (*page.Page, error) {
 	return node.page, nil
 }
 
-func (this *LRUReplacer) PutPage(frameIdx int, page *page.Page) error {
-	if frameIdx >= this.poolSize || frameIdx < 0 {
-		return fmt.Errorf("invalid frame index %d", frameIdx)
-	}
-
-	return this.addToTail(frameIdx, page)
-}
-
 func (lr *LRUReplacer) GetPinCount(frameIdx int) (int32, error) {
 	if frameIdx >= lr.poolSize || frameIdx < 0 {
 		return -1, fmt.Errorf("invalid frame index %d", frameIdx)
 	}
 
 	return lr.frames[frameIdx].pinCounts, nil
-}
-
-func (lr *LRUReplacer) Dirty(frameIdx int) error {
-	if frameIdx >= lr.poolSize || frameIdx < 0 {
-		return fmt.Errorf("invalid frame index %d", frameIdx)
-	}
-
-	node := lr.frames[frameIdx]
-	if node == nil {
-		return fmt.Errorf("frame %d is not allocated", frameIdx)
-	}
-
-	if !node.page.Header.IsDirty() {
-		node.page.Header.SetDirtyFlag()
-	}
-
-	return nil
-}
-
-func (lr *LRUReplacer) IsDirty(frameIdx int) (bool, error) {
-	if frameIdx >= lr.poolSize || frameIdx < 0 {
-		return false, fmt.Errorf("invalid frame index %d", frameIdx)
-	}
-	node := lr.frames[frameIdx]
-
-	return node.dirty, nil
 }
 
 func (this *LRUReplacer) ResetBuffer() {
@@ -261,4 +242,12 @@ func (lr *LRUReplacer) Evict() (int, error) {
 		current = node.nextIdx
 	}
 	return -1, errors.New("[Evict LRU] no evictable frame")
+}
+
+func (this *LRUReplacer) putPage(frameIdx int, page *page.Page) error {
+	if frameIdx >= this.poolSize || frameIdx < 0 {
+		return fmt.Errorf("invalid frame index %d", frameIdx)
+	}
+
+	return this.addToTail(frameIdx, page)
 }

@@ -247,7 +247,7 @@ func TestAllocateFrame(t *testing.T) {
 		for i := util.PageID(0); i < 3; i++ {
 			page, err1 := bp.AllocateFrame(i)
 			assert.NoError(t, err1, "allocate page %d", i)
-			err2 := bp.PinFrame(bp.rs.pageToIdx[page.Header.PageID])
+			err2 := bp.PinFrame(page.Header.PageID)
 
 			// Pin after allocation
 			assert.NoError(t, err2, "Pin after Allocation")
@@ -292,14 +292,14 @@ func TestAllocateFrame(t *testing.T) {
 		// Allocate a page
 		_, err := bp.AllocateFrame(1)
 		assert.NoError(t, err, "allocate page 1")
-		frameIdx := bp.rs.pageToIdx[1]
 
 		// Manually dirty the frame
-		errPin1 := bp.PinFrame(frameIdx)
+		errPin1 := bp.PinFrame(1)
 		assert.NoError(t, errPin1, "Pin for page 1 should not err")
 
 		// Remove from buffer manually to test frame reset
 		delete(bp.rs.pageToIdx, 1)
+		frameIdx := bp.rs.pageToIdx[1]
 		replacer.returnFrameToFree(frameIdx)
 
 		// Allocate different page to same frame
