@@ -61,27 +61,29 @@ func (this *ClockReplacer) RequestFree(page *page.Page, fm *file.FileManager) (i
 			continue
 		}
 
-		// to avoid race condition, store refcount -1 as sentinel
 		this.muP.Lock()
 		defer this.muP.Unlock()
 		if idx, exist := this.pageToIdx[page.Header.PageID]; exist {
 			return idx, nil
 		}
 
+		// to avoid race condition, store refcount -1 as sentinel
 		if atomic.CompareAndSwapInt32(&desc.refCount, 0, -1) {
 			dirty := desc.dirty.Load()
 			if dirty {
 				page := desc.page.Load()
-				desc.dirty.Store(false)
 				if err := fm.WritePage(page); err != nil {
 					desc.dirty.Store(true) // rollback
 					return -1, err
 				}
 				frameIdx := int(victimIdx)
-				this.pageToIdx[page.Header.PageID] = frameIdx
 				if err := this.putPage(frameIdx, page); err != nil {
+					desc.dirty.Store(true)
 					return -1, fmt.Errorf("[AllocateFrame] Put page fail: %w", err)
 				}
+
+				this.pageToIdx[page.Header.PageID] = frameIdx
+				delete(this.pageToIdx, desc.page.Load().Header.PageID)
 			}
 		}
 	}
@@ -107,14 +109,18 @@ func (this *ClockReplacer) Pin(pageId util.PageID) error {
 		return fmt.Errorf("frame %d is not allocated", frameIdx)
 	}
 
+	// Verify the page ID still matches (could have been replaced)
+	if page.Header.PageID != pageId {
+		return util.ErrPageNotFound
+	}
+
 	for {
 		current := atomic.LoadInt32(&node.refCount)
 		var newVal int32
-
-		if current >= 0 {
-			newVal = current + 1
+		if current < 0 {
+			newVal = 1
 		} else {
-			return fmt.Errorf("invalid refCount state: %d", current)
+			newVal = current + 1
 		}
 
 		if atomic.CompareAndSwapInt32(&node.refCount, current, newVal) {
@@ -134,6 +140,8 @@ func (this *ClockReplacer) Pin(pageId util.PageID) error {
 }
 
 func (this *ClockReplacer) Unpin(frameIdx int, isDirty bool) error {
+	this.muP.Lock()
+	defer this.muP.Unlock()
 	if frameIdx >= this.poolSize || frameIdx < 0 {
 		return fmt.Errorf("invalid frame index %d", frameIdx)
 	}

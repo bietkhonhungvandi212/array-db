@@ -45,22 +45,22 @@ func (lr *LRUReplacer) Init(size int, replacerShared *ReplacerShared) {
 	lr.nextFree[size-1] = -1
 }
 
-func (lr *LRUReplacer) RequestFree(page *page.Page, fm *file.FileManager) (int, error) {
+func (lr *LRUReplacer) RequestFree(page *page.Page, fm *file.FileManager) error {
 	freeIdx := lr.allocFromFree()
 	if freeIdx == -1 {
 		rmIdx, err := lr.Evict()
 		if err != nil {
-			return -1, err
+			return err
 		}
 		freeIdx = rmIdx
 	}
 
 	lr.pageToIdx[page.Header.PageID] = freeIdx
 	if err := lr.putPage(freeIdx, page); err != nil {
-		return -1, fmt.Errorf("[LRU RequestFree] Put page fail: %w", err)
+		return fmt.Errorf("[LRU RequestFree] Put page fail: %w", err)
 	}
 
-	return freeIdx, nil
+	return nil
 }
 
 // Pin marks a frame as pinned (cannot be evicted)

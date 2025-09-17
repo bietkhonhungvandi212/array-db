@@ -1,7 +1,6 @@
 package buffer
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/file"
@@ -39,19 +38,25 @@ func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
 	bp.muTable.RLock()
 	if idx, ok := bp.rs.pageToIdx[pageId]; ok {
 		bp.muTable.RUnlock()
+		if err := bp.PinFrame(pageId); err != nil {
+			return nil, err
+		}
 		return bp.replacer.GetPage(idx)
 	}
+	bp.muTable.RUnlock()
 
-	readPage, err := bp.fm.ReadPage(pageId)
-	if err != nil {
+	readPage, err1 := bp.fm.ReadPage(pageId)
+	if err1 != nil {
+		return nil, err1
+	}
+
+	if err := bp.replacer.RequestFree(readPage, bp.fm); err != nil {
 		return nil, err
 	}
 
-	idx, err := bp.replacer.RequestFree(readPage, bp.fm)
-	if err != nil {
+	if err := bp.PinFrame(pageId); err != nil {
 		return nil, err
 	}
-	fmt.Println(idx)
 
 	return readPage, nil
 }
