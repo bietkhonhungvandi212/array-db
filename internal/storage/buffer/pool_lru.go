@@ -48,7 +48,7 @@ func (lr *LRUReplacer) Init(size int, replacerShared *ReplacerShared) {
 func (lr *LRUReplacer) RequestFree(page *page.Page, fm *file.FileManager) error {
 	freeIdx := lr.allocFromFree()
 	if freeIdx == -1 {
-		rmIdx, err := lr.Evict()
+		rmIdx, err := lr.evict()
 		if err != nil {
 			return err
 		}
@@ -227,7 +227,7 @@ func (lr *LRUReplacer) returnFrameToFree(frameIdx int) {
 	lr.freeHead = frameIdx
 }
 
-func (lr *LRUReplacer) Evict() (int, error) {
+func (lr *LRUReplacer) evict() (int, error) {
 	current := lr.lruHead
 	for current != -1 {
 		node := lr.frames[current]

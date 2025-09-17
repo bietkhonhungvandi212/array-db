@@ -188,6 +188,9 @@ func TestAllocateFrame(t *testing.T) {
 			page, err := bp.AllocateFrame(i)
 			assert.NoError(t, err, "allocate page %d", i)
 			assert.NotNil(t, page, "page after allocate not nil %d", i)
+			err1 := bp.UnpinFrame(i, false)
+			assert.NoError(t, err1, "page after allocating should be unpined without err")
+
 		}
 
 		// Verify LRU order: 0 (head) ↔ 1 ↔ 2 (tail)
@@ -293,11 +296,9 @@ func TestAllocateFrame(t *testing.T) {
 		_, err := bp.AllocateFrame(1)
 		assert.NoError(t, err, "allocate page 1")
 
-		// Manually dirty the frame
-		errPin1 := bp.PinFrame(1)
-		assert.NoError(t, errPin1, "Pin for page 1 should not err")
-
 		// Remove from buffer manually to test frame reset
+		err1 := bp.UnpinFrame(1, false)
+		assert.NoError(t, err1, "unpinned a frame should not throw err")
 		delete(bp.rs.pageToIdx, 1)
 		frameIdx := bp.rs.pageToIdx[1]
 		replacer.returnFrameToFree(frameIdx)
@@ -310,12 +311,10 @@ func TestAllocateFrame(t *testing.T) {
 		// Verify frame was reset (should be same frame but clean state)
 		assert.Equal(t, frameIdx, newFrameIdx, "should reuse same frame")
 		count, errPin := bp.replacer.GetPinCount(newFrameIdx)
-		if errPin != nil {
-			assert.NoError(t, errPin1, "get pin count should not return error")
-		}
+		assert.NoError(t, errPin, "get pin count should not return error")
 
-		assert.Equal(t, int32(0), count, "pin count reset")
-		assert.False(t, page2.Header.IsPinned(), "page header pin flag reset")
+		assert.Equal(t, int32(1), count, "pin count reset")
+		assert.True(t, page2.Header.IsPinned(), "page header pin flag reset")
 		assert.False(t, page2.Header.IsDirty(), "page header dirty flag reset")
 	})
 }

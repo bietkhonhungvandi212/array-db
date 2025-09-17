@@ -35,6 +35,7 @@ func NewBufferPool(size int, fm *file.FileManager, replacer Replacer, shared *Re
 
 // AllocateFrame delegates eviction to the replacer.
 func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
+	// First check if page is already in buffer
 	bp.muTable.RLock()
 	if idx, ok := bp.rs.pageToIdx[pageId]; ok {
 		bp.muTable.RUnlock()
@@ -45,15 +46,18 @@ func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
 	}
 	bp.muTable.RUnlock()
 
-	readPage, err1 := bp.fm.ReadPage(pageId)
-	if err1 != nil {
-		return nil, err1
+	// Page not in buffer, need to load from disk
+	readPage, err := bp.fm.ReadPage(pageId)
+	if err != nil {
+		return nil, err
 	}
 
+	// Get the page into buffer and pin it
 	if err := bp.replacer.RequestFree(readPage, bp.fm); err != nil {
 		return nil, err
 	}
 
+	// Pin the newly loaded page
 	if err := bp.PinFrame(pageId); err != nil {
 		return nil, err
 	}
