@@ -19,13 +19,9 @@ type BufferPool struct {
 }
 
 // NewBufferPool initializes the buffer pool with a replacer.
-func NewBufferPool(size int, fm *file.FileManager, replacer Replacer, shared *ReplacerShared) *BufferPool {
-	if size <= 0 {
-		panic(util.ErrInvalidPoolSize)
-	}
+func NewBufferPool(fm *file.FileManager, replacer Replacer, shared *ReplacerShared) *BufferPool {
 	bp := &BufferPool{
 		fm:       fm,
-		poolSize: size,
 		rs:       shared,
 		replacer: replacer,
 	}
@@ -39,10 +35,9 @@ func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
 	bp.muTable.RLock()
 	if idx, ok := bp.rs.pageToIdx[pageId]; ok {
 		bp.muTable.RUnlock()
-		if err := bp.PinFrame(pageId); err != nil {
-			return nil, err
+		if err := bp.PinFrame(pageId); err == nil {
+			return bp.replacer.GetPage(idx)
 		}
-		return bp.replacer.GetPage(idx)
 	}
 	bp.muTable.RUnlock()
 

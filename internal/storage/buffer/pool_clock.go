@@ -1,7 +1,6 @@
 package buffer
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -30,7 +29,7 @@ type ClockReplacer struct {
 func (this *ClockReplacer) Init(size int, maxLoop int, replacerShared *ReplacerShared) {
 	this.frames = make([]*ClockDesc, size)
 	this.ReplacerShared = replacerShared
-	this.nextVictimIdx = 0
+	this.nextVictimIdx = -1
 	this.maxLoop = maxLoop
 
 	for i := 0; i < size; i++ {
@@ -42,9 +41,9 @@ func (this *ClockReplacer) Init(size int, maxLoop int, replacerShared *ReplacerS
 	}
 }
 
-func (this *ClockReplacer) RequestFree(page *page.Page, fm *file.FileManager) (int, error) {
+func (this *ClockReplacer) RequestFree(page *page.Page, fm *file.FileManager) error {
 	poolSize := int32(this.poolSize)
-	for range poolSize * int32(this.maxLoop) {
+	for {
 		// Atomically advance clock hand and get current position
 		victimIdx := atomic.AddInt32(&this.nextVictimIdx, 1) % poolSize
 
@@ -61,37 +60,80 @@ func (this *ClockReplacer) RequestFree(page *page.Page, fm *file.FileManager) (i
 			continue
 		}
 
-		this.muP.Lock()
-		defer this.muP.Unlock()
-		if idx, exist := this.pageToIdx[page.Header.PageID]; exist {
-			return idx, nil
+		// this.muP.Lock()
+		// defer this.muP.Unlock()
+		if _, exist := this.pageToIdx[page.Header.PageID]; exist {
+			return nil
 		}
 
+		frameIdx := int(victimIdx)
 		// to avoid race condition, store refcount -1 as sentinel
 		if atomic.CompareAndSwapInt32(&desc.refCount, 0, -1) {
 			dirty := desc.dirty.Load()
 			if dirty {
 				page := desc.page.Load()
 				if err := fm.WritePage(page); err != nil {
-					desc.dirty.Store(true) // rollback
-					return -1, err
+					return err
 				}
-				frameIdx := int(victimIdx)
 				if err := this.putPage(frameIdx, page); err != nil {
-					desc.dirty.Store(true)
-					return -1, fmt.Errorf("[AllocateFrame] Put page fail: %w", err)
+					return fmt.Errorf("[AllocateFrame] Put page fail: %w", err)
 				}
 
-				this.pageToIdx[page.Header.PageID] = frameIdx
-				delete(this.pageToIdx, desc.page.Load().Header.PageID)
 			}
+
+			// Only delete from pageToIdx if there's actually a page in this frame
+			existingPage := desc.page.Load()
+			if existingPage != nil {
+				delete(this.pageToIdx, existingPage.Header.PageID)
+			}
+			this.pageToIdx[page.Header.PageID] = frameIdx
+			desc.page.Store(page)
+			desc.dirty.Store(false)
+			atomic.StoreInt32(&desc.usageCount, 0)
+			atomic.StoreInt32(&desc.refCount, 0)
+
+			return nil
 		}
 	}
-
-	return -1, errors.New("can not find the victim with maxLoop")
 }
 
 func (this *ClockReplacer) Pin(pageId util.PageID) error {
+	// this.muP.Lock()
+	// defer this.muP.Unlock()
+	frameIdx, exist := this.pageToIdx[pageId]
+	if !exist {
+		return util.ErrPageNotFound
+	}
+
+	node := this.frames[frameIdx]
+	if atomic.LoadInt32(&node.refCount) < 0 {
+		return util.ErrPageEvicted
+	}
+
+	page := node.page.Load()
+	if page == nil {
+		return fmt.Errorf("frame %d is not allocated", frameIdx)
+	}
+
+	// Verify the page ID still matches (could have been replaced)
+	if page.Header.PageID != pageId {
+		return util.ErrPageMissed
+	}
+
+	atomic.AddInt32(&node.refCount, 1)
+	if !node.page.Load().Header.IsPinned() {
+		node.page.Load().Header.SetPinnedFlag()
+	}
+	// Successfully updated, now handle page header
+
+	if current := atomic.LoadInt32(&node.usageCount); current < int32(this.maxLoop) {
+		atomic.AddInt32(&node.usageCount, 1)
+	}
+
+	return nil
+}
+
+func (this *ClockReplacer) Unpin(pageId util.PageID, isDirty bool) error {
 	this.muP.Lock()
 	defer this.muP.Unlock()
 	frameIdx, exist := this.pageToIdx[pageId]
@@ -102,46 +144,6 @@ func (this *ClockReplacer) Pin(pageId util.PageID) error {
 	if frameIdx >= this.poolSize || frameIdx < 0 {
 		return fmt.Errorf("invalid frame index %d", frameIdx)
 	}
-
-	node := this.frames[frameIdx]
-	page := node.page.Load()
-	if page == nil {
-		return fmt.Errorf("frame %d is not allocated", frameIdx)
-	}
-
-	// Verify the page ID still matches (could have been replaced)
-	if page.Header.PageID != pageId {
-		return util.ErrPageNotFound
-	}
-
-	for {
-		current := atomic.LoadInt32(&node.refCount)
-		var newVal int32
-		if current < 0 {
-			newVal = 1
-		} else {
-			newVal = current + 1
-		}
-
-		if atomic.CompareAndSwapInt32(&node.refCount, current, newVal) {
-			// Successfully updated, now handle page header
-			if newVal == 1 {
-				page.Header.SetPinnedFlag()
-			}
-			break
-		}
-		// CAS failed, retry
-	}
-
-	if current := atomic.LoadInt32(&node.usageCount); current < int32(this.maxLoop) {
-		atomic.AddInt32(&node.usageCount, 1)
-	}
-	return nil
-}
-
-func (this *ClockReplacer) Unpin(frameIdx int, isDirty bool) error {
-	this.muP.Lock()
-	defer this.muP.Unlock()
 	if frameIdx >= this.poolSize || frameIdx < 0 {
 		return fmt.Errorf("invalid frame index %d", frameIdx)
 	}
@@ -205,4 +207,21 @@ func (this *ClockReplacer) putPage(frameIdx int, page *page.Page) error {
 	this.frames[frameIdx] = desc
 
 	return nil
+}
+
+func (this *ClockReplacer) ResetBuffer() {
+	// Clear page mappings
+	this.pageToIdx = make(map[util.PageID]int)
+
+	// Reset clock hand position
+	this.nextVictimIdx = 0
+
+	// Reset all frames to initial state
+	for i := 0; i < this.poolSize; i++ {
+		this.frames[i] = &ClockDesc{
+			usageCount: 0,
+			refCount:   0,
+			dirty:      atomic.Bool{},
+		}
+	}
 }

@@ -23,4 +23,6 @@ var (
 	ErrNoFreeFrame           = errors.New("no free frames")
 	ErrPageIdExistedInBuffer = errors.New("page id existed in buffer")
 	ErrPageNotFound          = errors.New("page not found in buffer")
+	ErrPageMissed            = errors.New("page is missed")
+	ErrPageEvicted           = errors.New("page is being evicted")
 )

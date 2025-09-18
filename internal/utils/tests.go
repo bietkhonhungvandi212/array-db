@@ -13,6 +13,6 @@ func CreateTempFile(t *testing.T) (string, func()) {
 	tempDir := t.TempDir()
 	tempFile := filepath.Join(tempDir, fmt.Sprintf("arraydb-test-%d.dat", rand.Intn(100)+10))
 	return tempFile, func() {
-		os.Remove(tempFile)
+		os.RemoveAll(tempFile)
 	}
 }
