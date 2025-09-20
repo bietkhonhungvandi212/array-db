@@ -1,8 +1,6 @@
 package buffer
 
 import (
-	"sync"
-
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/file"
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/page"
 	util "github.com/bietkhonhungvandi212/array-db/internal/utils"
@@ -13,8 +11,6 @@ type BufferPool struct {
 	fm       *file.FileManager // File manager for I/O
 	rs       *ReplacerShared
 	replacer Replacer // Pluggable replacement policy
-
-	muTable sync.Mutex // Lock table lookup
 }
 
 // NewBufferPool initializes the buffer pool with a replacer.
@@ -33,7 +29,7 @@ func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
 	// First check if page is already in buffer
 	if page, err := bp.replacer.GetPage(pageId); err == nil {
 		if err := bp.PinFrame(pageId); err == nil {
-			return page, err
+			return page, nil
 		}
 	}
 
