@@ -163,7 +163,7 @@ func TestAllocateFrameClock(t *testing.T) {
 
 		// Verify buffer pool is full
 		assert.Equal(t, int(3), len(shared.pageToIdx), "buffer pool should be full")
-		assert.Equal(t, int32(3), replacer.nextVictimIdx, "victim current must be at index 3")
+		assert.Equal(t, int32(2), replacer.nextVictimIdx, "victim current must be at index 3")
 	})
 	t.Run("AllocateFrame_EvictionRequired", func(t *testing.T) {
 		// Reset state
@@ -214,10 +214,12 @@ func TestAllocateFrameClock(t *testing.T) {
 			page, err := bp.AllocateFrame(i)
 			assert.NoError(t, err, "allocate page %d", i)
 			assert.NotNil(t, page, "page after allocate not nil %d", i)
+			err2 := bp.UnpinFrame(i, false)
+			assert.NoError(t, err2, "unpinned after allocate must not be err")
 		}
 
 		// Setup Pin page to increment usage count
-		for i := 0; i < 9; i++ {
+		for i := 0; i < 3; i++ {
 			idx := i % 3
 			err1 := bp.PinFrame(util.PageID(idx))
 			assert.NoError(t, err1, "pin should not err")
@@ -245,8 +247,14 @@ func TestAllocateFrameClock(t *testing.T) {
 		assert.NoError(t, err, "get page 3 from replacer")
 		assert.Equal(t, page3, storedPage3, "page 3 in replacer frames")
 
-		// Verify other pages still in buffer
 		assert.Contains(t, shared.pageToIdx, util.PageID(1), "page 1 still in buffer")
 		assert.Contains(t, shared.pageToIdx, util.PageID(2), "page 2 still in buffer")
+
+		node1Idx := shared.pageToIdx[util.PageID(1)]
+		assert.Equal(t, int32(0), replacer.frames[node1Idx].usageCount, "usageCount of page id 1 must be 0 after eviction")
+		assert.Equal(t, int32(0), replacer.frames[node1Idx].refCount, "refCount of page id 1 must be 0 after eviction")
+		node2Idx := shared.pageToIdx[util.PageID(2)]
+		assert.Equal(t, int32(0), replacer.frames[node2Idx].usageCount, "usageCount of page id 2 must be 0 after eviction")
+		assert.Equal(t, int32(0), replacer.frames[node2Idx].refCount, "refCount of page id 2 must be 0 after eviction")
 	})
 }

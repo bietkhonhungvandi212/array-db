@@ -144,9 +144,6 @@ func (this *ClockReplacer) Unpin(pageId util.PageID, isDirty bool) error {
 	if frameIdx >= this.poolSize || frameIdx < 0 {
 		return fmt.Errorf("invalid frame index %d", frameIdx)
 	}
-	if frameIdx >= this.poolSize || frameIdx < 0 {
-		return fmt.Errorf("invalid frame index %d", frameIdx)
-	}
 
 	node := this.frames[frameIdx]
 	page := node.page.Load()
@@ -214,7 +211,7 @@ func (this *ClockReplacer) ResetBuffer() {
 	this.pageToIdx = make(map[util.PageID]int)
 
 	// Reset clock hand position
-	this.nextVictimIdx = 0
+	this.nextVictimIdx = -1
 
 	// Reset all frames to initial state
 	for i := 0; i < this.poolSize; i++ {
