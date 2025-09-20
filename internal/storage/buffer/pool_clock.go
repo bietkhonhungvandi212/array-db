@@ -15,6 +15,8 @@ type ClockDesc struct {
 	usageCount int32 // TODO: shoud have the max usage for efficient clock hand
 	refCount   int32
 	dirty      atomic.Bool
+
+	muPin sync.Mutex
 }
 
 type ClockReplacer struct {
@@ -22,8 +24,6 @@ type ClockReplacer struct {
 	*ReplacerShared
 	nextVictimIdx int32
 	maxLoop       int
-
-	muP sync.Mutex
 }
 
 func (this *ClockReplacer) Init(size int, maxLoop int, replacerShared *ReplacerShared) {
@@ -121,9 +121,11 @@ func (this *ClockReplacer) Pin(pageId util.PageID) error {
 	}
 
 	atomic.AddInt32(&node.refCount, 1)
+	node.muPin.Lock()
 	if !node.page.Load().Header.IsPinned() {
 		node.page.Load().Header.SetPinnedFlag()
 	}
+	node.muPin.Unlock()
 	// Successfully updated, now handle page header
 
 	if current := atomic.LoadInt32(&node.usageCount); current < int32(this.maxLoop) {
@@ -134,8 +136,8 @@ func (this *ClockReplacer) Pin(pageId util.PageID) error {
 }
 
 func (this *ClockReplacer) Unpin(pageId util.PageID, isDirty bool) error {
-	this.muP.Lock()
-	defer this.muP.Unlock()
+	// this.muP.Lock()
+	// defer this.muP.Unlock()
 	frameIdx, exist := this.pageToIdx[pageId]
 	if !exist {
 		return util.ErrPageNotFound
@@ -154,19 +156,19 @@ func (this *ClockReplacer) Unpin(pageId util.PageID, isDirty bool) error {
 	// Handle dirty flag first (while still pinned)
 	if isDirty {
 		node.dirty.Store(true)
+		node.muPin.Lock()
 		page.Header.SetDirtyFlag()
+		node.muPin.Unlock()
 	}
 
-	// Atomically decrement reference count
-	newCount := atomic.AddInt32(&node.refCount, -1)
-	if newCount < 0 {
-		// Restore count and return error - negative counts are invalid here
-		atomic.AddInt32(&node.refCount, 1)
-		return fmt.Errorf("frame %d was not pinned (refCount was %d)", frameIdx, newCount+1)
+	if current := atomic.LoadInt32(&node.refCount); current <= 0 {
+		return fmt.Errorf("frame %d was not pinned", frameIdx)
 	}
 
-	if newCount == 0 {
+	if newCount := atomic.AddInt32(&node.refCount, -1); newCount == 0 {
+		node.muPin.Lock()
 		_ = page.Header.ClearPinnedFlag()
+		node.muPin.Unlock()
 	}
 
 	return nil

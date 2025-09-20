@@ -2,6 +2,7 @@ package buffer
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/bietkhonhungvandi212/array-db/internal/storage/file"
@@ -256,5 +257,96 @@ func TestAllocateFrameClock(t *testing.T) {
 		node2Idx := shared.pageToIdx[util.PageID(2)]
 		assert.Equal(t, int32(0), replacer.frames[node2Idx].usageCount, "usageCount of page id 2 must be 0 after eviction")
 		assert.Equal(t, int32(0), replacer.frames[node2Idx].refCount, "refCount of page id 2 must be 0 after eviction")
+	})
+}
+
+func TestBufferPoolClockConcurrency(t *testing.T) {
+	path, cleanup := util.CreateTempFile(t)
+	defer cleanup()
+	fm, err := file.NewFileManager(path, 5)
+	assert.NoError(t, err, "create FileManager")
+	defer fm.Close()
+
+	// Create shared state and LRU replacer
+	size := 3
+	maxLoop := 3
+	shared := NewReplacerShared(size)
+	replacer := &ClockReplacer{}
+	replacer.Init(size, maxLoop, shared)
+
+	bp := NewBufferPool(fm, replacer, shared)
+
+	// Create test pages on disk first
+	for i := util.PageID(0); i < 5; i++ {
+		testPage := &page.Page{
+			Header: page.PageHeader{PageID: i},
+		}
+		testData := fmt.Sprintf("Page %d test data", i)
+		copy(testPage.Data[:], []byte(testData))
+		assert.NoError(t, fm.WritePage(testPage), "write test page %d", i)
+	}
+
+	t.Run("ClockBufferConcurrency_HitCache", func(t *testing.T) {
+		// Reset state
+		replacer.ResetBuffer()
+
+		// Fill buffer pool with initial pages
+		for i := util.PageID(0); i < 3; i++ {
+			page, err := bp.AllocateFrame(i)
+			assert.NoError(t, err, "allocate page %d", i)
+			assert.NotNil(t, page, "page after allocate not nil %d", i)
+			err2 := bp.UnpinFrame(i, false)
+			assert.NoError(t, err2, "unpinned after allocate must not be err")
+		}
+
+		// Generate goroutine for hit cache concurrently
+		numGoroutines := 10
+		targetPageId := util.PageID(1)
+
+		var wg sync.WaitGroup
+		results := make([]*page.Page, numGoroutines)
+		errors := make([]error, numGoroutines)
+		for i := range numGoroutines {
+			wg.Add(1)
+			go func(index int) {
+				defer wg.Done()
+				page, err := bp.AllocateFrame(targetPageId)
+				results[index] = page
+				errors[index] = err
+
+				// Unpin after allocation to allow other goroutines to access
+				if err == nil && page != nil {
+					err1 := bp.UnpinFrame(targetPageId, false)
+					assert.NoError(t, err1, "unpinned after allocation concurently should not throw error")
+				}
+			}(i)
+		}
+
+		wg.Wait()
+		// Verify all goroutines succeeded
+		var firstPage *page.Page
+		for i := 0; i < numGoroutines; i++ {
+			assert.NoError(t, errors[i], "goroutine %d should not have error", i)
+			assert.NotNil(t, results[i], "goroutine %d should get a valid page", i)
+
+			if firstPage == nil {
+				firstPage = results[i]
+			} else {
+				// All goroutines should get the same page instance (cache hit)
+				assert.Equal(t, firstPage, results[i], "goroutine %d should get same page instance", i)
+			}
+
+			// Verify correct page ID
+			assert.Equal(t, targetPageId, results[i].Header.PageID, "goroutine %d should get correct page ID", i)
+		}
+
+		// Verify the page is still in the buffer pool
+		frameIdx, exists := shared.pageToIdx[targetPageId]
+		assert.True(t, exists, "page should still be in buffer pool")
+
+		// Verify frame state
+		storedPage, err := replacer.GetPage(frameIdx)
+		assert.NoError(t, err, "should be able to get page from replacer")
+		assert.Equal(t, firstPage, storedPage, "stored page should match")
 	})
 }
