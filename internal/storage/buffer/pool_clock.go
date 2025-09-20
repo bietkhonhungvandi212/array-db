@@ -24,6 +24,8 @@ type ClockReplacer struct {
 	*ReplacerShared
 	nextVictimIdx int32
 	maxLoop       int
+
+	muLookup sync.Mutex
 }
 
 func (this *ClockReplacer) Init(size int, maxLoop int, replacerShared *ReplacerShared) {
@@ -60,11 +62,13 @@ func (this *ClockReplacer) RequestFree(page *page.Page, fm *file.FileManager) er
 			continue
 		}
 
-		// this.muP.Lock()
+		this.muLookup.Lock()
 		// defer this.muP.Unlock()
 		if _, exist := this.pageToIdx[page.Header.PageID]; exist {
+			this.muLookup.Unlock()
 			return nil
 		}
+		this.muLookup.Unlock()
 
 		frameIdx := int(victimIdx)
 		// to avoid race condition, store refcount -1 as sentinel
@@ -84,9 +88,13 @@ func (this *ClockReplacer) RequestFree(page *page.Page, fm *file.FileManager) er
 			// Only delete from pageToIdx if there's actually a page in this frame
 			existingPage := desc.page.Load()
 			if existingPage != nil {
+				this.muLookup.Lock()
 				delete(this.pageToIdx, existingPage.Header.PageID)
+				this.muLookup.Unlock()
 			}
+			this.muLookup.Lock()
 			this.pageToIdx[page.Header.PageID] = frameIdx
+			this.muLookup.Unlock()
 			desc.page.Store(page)
 			desc.dirty.Store(false)
 			atomic.StoreInt32(&desc.usageCount, 0)
@@ -98,17 +106,19 @@ func (this *ClockReplacer) RequestFree(page *page.Page, fm *file.FileManager) er
 }
 
 func (this *ClockReplacer) Pin(pageId util.PageID) error {
-	// this.muP.Lock()
-	// defer this.muP.Unlock()
+	this.muLookup.Lock()
 	frameIdx, exist := this.pageToIdx[pageId]
 	if !exist {
+		this.muLookup.Unlock()
 		return util.ErrPageNotFound
 	}
+	this.muLookup.Unlock()
 
 	node := this.frames[frameIdx]
 	if atomic.LoadInt32(&node.refCount) < 0 {
 		return util.ErrPageEvicted
 	}
+	atomic.AddInt32(&node.refCount, 1)
 
 	page := node.page.Load()
 	if page == nil {
@@ -120,7 +130,6 @@ func (this *ClockReplacer) Pin(pageId util.PageID) error {
 		return util.ErrPageMissed
 	}
 
-	atomic.AddInt32(&node.refCount, 1)
 	node.muPin.Lock()
 	if !node.page.Load().Header.IsPinned() {
 		node.page.Load().Header.SetPinnedFlag()
@@ -136,12 +145,13 @@ func (this *ClockReplacer) Pin(pageId util.PageID) error {
 }
 
 func (this *ClockReplacer) Unpin(pageId util.PageID, isDirty bool) error {
-	// this.muP.Lock()
-	// defer this.muP.Unlock()
+	this.muLookup.Lock()
 	frameIdx, exist := this.pageToIdx[pageId]
 	if !exist {
+		this.muLookup.Unlock()
 		return util.ErrPageNotFound
 	}
+	this.muLookup.Unlock()
 
 	if frameIdx >= this.poolSize || frameIdx < 0 {
 		return fmt.Errorf("invalid frame index %d", frameIdx)
@@ -182,7 +192,14 @@ func (this *ClockReplacer) GetPinCount(frameIdx int) (int32, error) {
 	return atomic.LoadInt32(&this.frames[frameIdx].refCount), nil
 }
 
-func (this *ClockReplacer) GetPage(frameIdx int) (*page.Page, error) {
+func (this *ClockReplacer) GetPage(pageId util.PageID) (*page.Page, error) {
+	this.muLookup.Lock()
+	defer this.muLookup.Unlock()
+	frameIdx, exist := this.pageToIdx[pageId]
+	if !exist {
+		return nil, util.ErrPageNotFound
+	}
+
 	node := this.frames[frameIdx]
 	page := node.page.Load()
 	if page == nil {

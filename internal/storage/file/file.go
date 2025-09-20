@@ -112,7 +112,6 @@ func (fm *FileManager) Close() error {
 	if fm == nil {
 		return nil // Idempotent
 	}
-	fmt.Println("Haahaha")
 
 	fm.mmapLock.Lock()
 	defer fm.mmapLock.Unlock()

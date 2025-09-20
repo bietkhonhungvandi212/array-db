@@ -111,7 +111,12 @@ func (lr *LRUReplacer) Unpin(pageId util.PageID, isDirty bool) error {
 	return nil
 }
 
-func (this *LRUReplacer) GetPage(frameIdx int) (*page.Page, error) {
+func (this *LRUReplacer) GetPage(pageId util.PageID) (*page.Page, error) {
+	frameIdx, exist := this.pageToIdx[pageId]
+	if !exist {
+		return nil, util.ErrPageNotFound
+	}
+
 	node := this.frames[frameIdx]
 	if node == nil {
 		return nil, util.ErrPageIdExistedInBuffer

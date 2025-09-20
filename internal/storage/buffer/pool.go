@@ -10,12 +10,11 @@ import (
 
 // BufferPool manages the buffer pool with a pluggable replacer.
 type BufferPool struct {
-	poolSize int               // Total frames
 	fm       *file.FileManager // File manager for I/O
 	rs       *ReplacerShared
 	replacer Replacer // Pluggable replacement policy
 
-	muTable sync.RWMutex // Lock table lookup
+	muTable sync.Mutex // Lock table lookup
 }
 
 // NewBufferPool initializes the buffer pool with a replacer.
@@ -32,14 +31,11 @@ func NewBufferPool(fm *file.FileManager, replacer Replacer, shared *ReplacerShar
 // AllocateFrame delegates eviction to the replacer.
 func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
 	// First check if page is already in buffer
-	bp.muTable.RLock()
-	if idx, ok := bp.rs.pageToIdx[pageId]; ok {
-		bp.muTable.RUnlock()
+	if page, err := bp.replacer.GetPage(pageId); err == nil {
 		if err := bp.PinFrame(pageId); err == nil {
-			return bp.replacer.GetPage(idx)
+			return page, err
 		}
 	}
-	bp.muTable.RUnlock()
 
 	// Page not in buffer, need to load from disk
 	readPage, err := bp.fm.ReadPage(pageId)

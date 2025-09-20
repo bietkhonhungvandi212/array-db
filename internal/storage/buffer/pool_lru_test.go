@@ -138,7 +138,7 @@ func TestAllocateFrameLRU(t *testing.T) {
 		assert.True(t, exists, "page should be in pageToIdx")
 
 		// Get page from replacer to verify it's stored correctly
-		storedPage, err := replacer.GetPage(frameIdx)
+		storedPage, err := replacer.GetPage(0)
 		assert.NoError(t, err, "get page from replacer")
 		assert.Equal(t, page1, storedPage, "page should be in replacer frames")
 
@@ -163,10 +163,10 @@ func TestAllocateFrameLRU(t *testing.T) {
 
 			// Verify allocation
 			assert.Equal(t, pageID, page.Header.PageID, "correct page ID %d", pageID)
-			frameIdx, exists := bp.rs.pageToIdx[pageID]
+			_, exists := bp.rs.pageToIdx[pageID]
 			assert.True(t, exists, "page %d in pageToIdx", pageID)
 			// Verify page is stored in replacer
-			storedPage, err := replacer.GetPage(frameIdx)
+			storedPage, err := replacer.GetPage(pageID)
 			assert.NoError(t, err, "get page %d from replacer", pageID)
 			assert.Equal(t, page, storedPage, "page %d in replacer frames", pageID)
 		}
@@ -215,7 +215,7 @@ func TestAllocateFrameLRU(t *testing.T) {
 		assert.True(t, exists3, "page 3 should be in buffer")
 
 		// Verify page 3 is stored in replacer
-		storedPage3, err := replacer.GetPage(frameIdx3)
+		storedPage3, err := replacer.GetPage(3)
 		assert.NoError(t, err, "get page 3 from replacer")
 		assert.Equal(t, page3, storedPage3, "page 3 in replacer frames")
 		assert.Equal(t, frameIdx3, replacer.lruTail, "lruTail should point to page 3")

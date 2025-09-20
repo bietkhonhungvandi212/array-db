@@ -13,6 +13,6 @@ type Replacer interface {
 	Pin(page util.PageID) error
 	Unpin(page util.PageID, isDirty bool) error
 	GetPinCount(frameIdx int) (int32, error)
-	GetPage(frameIdx int) (*page.Page, error)
+	GetPage(pageId util.PageID) (*page.Page, error)
 	ResetBuffer() // for testing purpose
 }
