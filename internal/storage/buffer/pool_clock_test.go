@@ -111,29 +111,39 @@ func TestAllocateFrameClock(t *testing.T) {
 		assert.NoError(t, fm.WritePage(testPage), "write test page %d", i)
 	}
 
-	t.Run("AllocateFrame_CacheHit", func(t *testing.T) {
+	t.Run("GetPage_CacheHit", func(t *testing.T) {
 		// Reset state
 		replacer.ResetBuffer()
 
-		// First allocation - cache miss
-		page1, err := bp.AllocateFrame(0)
-		assert.NoError(t, err, "first allocation")
-		assert.NotNil(t, page1, "page should not be nil")
-		assert.Equal(t, util.PageID(0), page1.Header.PageID, "correct page ID")
+		// First get page - cache miss, should allocate
+		var page1 *page.Page
+		_, err := bp.GetPage(0)
+		if err == util.ErrPageNotFound {
+			// Page not in cache, allocate it first
+			page1, err = bp.AllocateFrame(0)
+			assert.NoError(t, err, "first allocation")
+			assert.NotNil(t, page1, "page should not be nil")
+			assert.Equal(t, util.PageID(0), page1.Header.PageID, "correct page ID")
+
+			// Unpin after allocation
+			err = bp.Release(0, false)
+			assert.NoError(t, err, "unpin after allocation")
+		} else {
+			t.Fatal("Expected cache miss on first get")
+		}
 
 		// Verify page is in buffer
 		frameIdx, exists := shared.pageToIdx[0]
 		assert.True(t, exists, "page should be in pageToIdx")
 
-		// Get page from replacer to verify it's stored correctly
-		storedPage, err := replacer.GetPage(0)
-		assert.NoError(t, err, "get page from replacer")
-		assert.Equal(t, page1, storedPage, "page should be in replacer frames")
-
-		// Second allocation - cache hit
-		page1Again, err := bp.AllocateFrame(0)
-		assert.NoError(t, err, "cache hit allocation")
+		// Second get page - cache hit
+		page1Again, err := bp.GetPage(0)
+		assert.NoError(t, err, "cache hit get page")
 		assert.Equal(t, page1, page1Again, "should return same page instance")
+
+		// Unpin after getting
+		err = bp.Release(0, false)
+		assert.NoError(t, err, "unpin after cache hit")
 
 		// Verify buffer state unchanged
 		assert.Equal(t, frameIdx, shared.pageToIdx[0], "frame index unchanged")
@@ -153,12 +163,21 @@ func TestAllocateFrameClock(t *testing.T) {
 			assert.Equal(t, pageID, page.Header.PageID, "correct page ID %d", pageID)
 			frameIdx, exists := bp.rs.pageToIdx[pageID]
 			assert.True(t, exists, "page %d in pageToIdx", pageID)
-			// Verify page is stored in replacer
+
+			// Unpin the page from AllocateFrame first
+			err = bp.Release(pageID, false)
+			assert.NoError(t, err, "unpin page %d after allocate", pageID)
+
+			// Verify page is stored in replacer - GetPage will pin it again
 			storedPage, err := replacer.GetPage(pageID)
 			assert.NoError(t, err, "get page %d from replacer", pageID)
 			assert.Equal(t, page, storedPage, "page %d in replacer frames", pageID)
-			assert.Equal(t, int32(1), replacer.frames[frameIdx].refCount, "refCount %d in replacer frames should be 1", pageID)
-			assert.Equal(t, int32(1), replacer.frames[frameIdx].usageCount, "usageCount %d in replacer frames should be 1", pageID)
+			assert.Equal(t, int32(1), replacer.frames[frameIdx].refCount, "refCount %d in replacer frames should be 1 after GetPage pins", pageID)
+			assert.Equal(t, int32(2), replacer.frames[frameIdx].usageCount, "usageCount %d in replacer frames should be 2 after allocate+GetPage", pageID)
+
+			// Unpin the page that GetPage pinned
+			err = bp.Release(pageID, false)
+			assert.NoError(t, err, "unpin page %d after GetPage", pageID)
 			assert.False(t, replacer.frames[frameIdx].dirty.Load(), "dirty flag %d in replacer frames should be false", pageID)
 		}
 
@@ -177,7 +196,7 @@ func TestAllocateFrameClock(t *testing.T) {
 			assert.NotNil(t, page, "page after allocate not nil %d", i)
 
 			// Test in one loop first
-			err1 := bp.UnpinFrame(i, false)
+			err1 := bp.Release(i, false)
 			assert.NoError(t, err1, "page after allocating should be unpined without err")
 
 		}
@@ -215,16 +234,16 @@ func TestAllocateFrameClock(t *testing.T) {
 			page, err := bp.AllocateFrame(i)
 			assert.NoError(t, err, "allocate page %d", i)
 			assert.NotNil(t, page, "page after allocate not nil %d", i)
-			err2 := bp.UnpinFrame(i, false)
+			err2 := bp.Release(i, false)
 			assert.NoError(t, err2, "unpinned after allocate must not be err")
 		}
 
-		// Setup Pin page to increment usage count
-		for i := 0; i < 3; i++ {
-			idx := i % 3
-			err1 := bp.PinFrame(util.PageID(idx))
-			assert.NoError(t, err1, "pin should not err")
-			err2 := bp.UnpinFrame(util.PageID(idx), false)
+		// Setup Get page to increment usage count
+		for idx := 0; idx < 3; idx++ {
+			page, err1 := bp.GetPage(util.PageID(idx))
+			assert.NoError(t, err1, "get page should not err")
+			assert.NotNil(t, page, "page should not be nil")
+			err2 := bp.Release(util.PageID(idx), false)
 			assert.NoError(t, err2, "unpin should not err")
 		}
 
@@ -295,11 +314,11 @@ func TestBufferPoolClockConcurrency(t *testing.T) {
 			page, err := bp.AllocateFrame(i)
 			assert.NoError(t, err, "allocate page %d", i)
 			assert.NotNil(t, page, "page after allocate not nil %d", i)
-			err2 := bp.UnpinFrame(i, false)
+			err2 := bp.Release(i, false)
 			assert.NoError(t, err2, "unpinned after allocate must not be err")
 		}
 
-		// Generate goroutine for hit cache concurrently
+		// Generate goroutine for hit cache concurrently using GetPage
 		numGoroutines := 10
 		targetPageId := util.PageID(1)
 
@@ -310,14 +329,14 @@ func TestBufferPoolClockConcurrency(t *testing.T) {
 			wg.Add(1)
 			go func(index int) {
 				defer wg.Done()
-				page, err := bp.AllocateFrame(targetPageId)
+				page, err := bp.GetPage(targetPageId)
 				results[index] = page
 				errors[index] = err
 
-				// Unpin after allocation to allow other goroutines to access
+				// Unpin after getting page to allow other goroutines to access
 				if err == nil && page != nil {
-					err1 := bp.UnpinFrame(targetPageId, false)
-					assert.NoError(t, err1, "unpinned after allocation concurently should not throw error")
+					err1 := bp.Release(targetPageId, false)
+					assert.NoError(t, err1, "unpinned after getting page concurently should not throw error")
 				}
 			}(i)
 		}
@@ -392,7 +411,7 @@ func TestBufferPoolClockConcurrencyAllocation(t *testing.T) {
 				page, err := bp.AllocateFrame(pageId)
 				assert.NoError(t, err, "allocate page %d", i)
 				assert.NotNil(t, page, "page after allocate not nil %d", i)
-				err2 := bp.UnpinFrame(pageId, false)
+				err2 := bp.Release(pageId, false)
 				assert.NoError(t, err2, "unpinned after allocate must not be err")
 			}(i)
 		}
@@ -407,7 +426,7 @@ func TestBufferPoolClockConcurrencyAllocation(t *testing.T) {
 			assert.Contains(t, shared.pageToIdx, pageId, "page id %d should be in the buffer", pageId)
 			frameIdx := shared.pageToIdx[pageId]
 			node := replacer.frames[frameIdx]
-			assert.Equal(t, int32(0), node.refCount, "refCount at index %d after allocate must be 0", i)
+			assert.Equal(t, int32(0), node.refCount, "refCount at index %d after allocate+unpin must be 0", i)
 			assert.Equal(t, int32(1), node.usageCount, "usageCount index %d after allocate must be 1", i)
 			assert.NotNil(t, node.page.Load(), "the page at node index %d should not be nil", i)
 			assert.Equal(t, pageId, node.page.Load().Header.PageID, "the page at node index %d should not be nil", i)
@@ -430,7 +449,7 @@ func TestBufferPoolClockConcurrencyAllocation(t *testing.T) {
 				page, err := bp.AllocateFrame(pageId)
 				assert.NoError(t, err, "allocate page %d", index)
 				assert.NotNil(t, page, "page after allocate not nil %d", index)
-				err2 := bp.UnpinFrame(pageId, false)
+				err2 := bp.Release(pageId, false)
 				assert.NoError(t, err2, "unpinned after allocate must not be err")
 			}(i)
 		}
@@ -442,22 +461,26 @@ func TestBufferPoolClockConcurrencyAllocation(t *testing.T) {
 		// Now pin and unpin some pages to increase their usage count
 		// This tests the clock algorithm's usage count behavior
 		pinnedPages := map[util.PageID]bool{}
+		pinnedMu := sync.Mutex{}
 		var wgAccess sync.WaitGroup
-		var muPinnedPages sync.Mutex
-		for range 10 {
-			wgAccess.Add(1)
-			go func() {
-				defer wgAccess.Done()
+		for range 1000 {
+			wgAccess.Go(func() {
 				pageId := util.PageID(rand.Intn(10))
-				muPinnedPages.Lock()
+				pinnedMu.Lock()
+				if pinnedPages[pageId] {
+					pinnedMu.Unlock()
+					return // Skip if already pinned
+				}
 				pinnedPages[pageId] = true
-				muPinnedPages.Unlock()
+				pinnedMu.Unlock()
 
-				err := bp.PinFrame(pageId)
-				assert.NoError(t, err, "pin page %d", pageId)
-				err = bp.UnpinFrame(pageId, false)
+				page, err := bp.GetPage(pageId)
+				assert.NoError(t, err, "get page %d", pageId)
+				assert.NotNil(t, page, "page %d should not be nil", pageId)
+				assert.Equal(t, pageId, page.Header.PageID, "page id should be match at %d", pageId)
+				err = bp.Release(page.Header.PageID, false)
 				assert.NoError(t, err, "unpin page %d", pageId)
-			}()
+			})
 		}
 
 		wgAccess.Wait()
@@ -473,19 +496,29 @@ func TestBufferPoolClockConcurrencyAllocation(t *testing.T) {
 		// Now try to allocate new pages concurrently (should trigger eviction)
 		// This tests concurrent eviction behavior
 		var evictionWg sync.WaitGroup
-		for range 20 {
-			evictionWg.Add(1)
-			go func() {
-				defer evictionWg.Done()
+
+		for range 1000 {
+			evictionWg.Go(func() {
 				pageId := util.PageID(rand.Intn(10) + 10)
-				page, err := bp.AllocateFrame(pageId)
-				assert.NoError(t, err, "allocate new page %d should succeed", pageId)
-				assert.NotNil(t, page, "new page %d should not be nil", pageId)
-				assert.Equal(t, pageId, page.Header.PageID, "correct page ID")
-				err2 := bp.UnpinFrame(pageId, false)
-				assert.NoError(t, err2, "unpin new page %d", pageId)
-			}()
+				if page, err := bp.GetPage(pageId); err != nil {
+					// Page not found, allocate it
+					page, err := bp.AllocateFrame(pageId)
+					assert.NoError(t, err, "evicted and allocate should not throw err")
+					assert.Equal(t, pageId, page.Header.PageID, "correct page ID")
+
+					// Unpin after allocation
+					err2 := bp.Release(pageId, false)
+					assert.NoError(t, err2, "unpinned should not throw err")
+				} else {
+					// Page was found by GetPage (which pinned it), so unpin it
+					assert.NotNil(t, page, "page should not be nil")
+					assert.Equal(t, pageId, page.Header.PageID, "correct page ID")
+					err2 := bp.Release(pageId, false)
+					assert.NoError(t, err2, "unpin found page should not throw err")
+				}
+			})
 		}
+
 		evictionWg.Wait()
 
 		// Verify buffer is still at capacity

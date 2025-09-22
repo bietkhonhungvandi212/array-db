@@ -26,13 +26,6 @@ func NewBufferPool(fm *file.FileManager, replacer Replacer, shared *ReplacerShar
 
 // AllocateFrame delegates eviction to the replacer.
 func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
-	// First check if page is already in buffer
-	if page, err := bp.replacer.GetPage(pageId); err == nil {
-		if err := bp.PinFrame(pageId); err == nil {
-			return page, nil
-		}
-	}
-
 	// Page not in buffer, need to load from disk
 	readPage, err := bp.fm.ReadPage(pageId)
 	if err != nil {
@@ -44,20 +37,15 @@ func (bp *BufferPool) AllocateFrame(pageId util.PageID) (*page.Page, error) {
 		return nil, err
 	}
 
-	// Pin the newly loaded page
-	if err := bp.PinFrame(pageId); err != nil {
-		return nil, err
-	}
-
 	return readPage, nil
 }
 
-// PinFrame delegates to replacer.
-func (bp *BufferPool) PinFrame(pageId util.PageID) error {
-	return bp.replacer.Pin(pageId)
+// Get and pin page
+func (bp *BufferPool) GetPage(pageId util.PageID) (*page.Page, error) {
+	return bp.replacer.GetPage(pageId)
 }
 
 // UnpinFrame delegates to replacer.
-func (bp *BufferPool) UnpinFrame(pageId util.PageID, isDirty bool) error {
+func (bp *BufferPool) Release(pageId util.PageID, isDirty bool) error {
 	return bp.replacer.Unpin(pageId, isDirty)
 }

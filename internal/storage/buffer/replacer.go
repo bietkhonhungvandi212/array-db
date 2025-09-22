@@ -10,7 +10,7 @@ import (
 type Replacer interface {
 	// Request a frame for allocating and evict if needed. returns an evictable frame index, or error if none.
 	RequestFree(page *page.Page, fm *file.FileManager) error
-	Pin(page util.PageID) error
+	Pin(frameIdx int) error
 	Unpin(page util.PageID, isDirty bool) error
 	GetPinCount(frameIdx int) (int32, error)
 	GetPage(pageId util.PageID) (*page.Page, error)

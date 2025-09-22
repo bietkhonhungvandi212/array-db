@@ -31,6 +31,6 @@ func (rs *ReplacerShared) getMap() map[util.PageID]int {
 	return rs.pageToIdx
 }
 
-func (lr *LRUReplacer) Size() int {
+func (lr *ReplacerShared) Size() int {
 	return lr.poolSize
 }

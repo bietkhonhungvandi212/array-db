@@ -93,12 +93,8 @@ func (p *PageHeader) SetPinnedFlag() {
 	p.Flags |= PINNED_FLAG
 }
 
-func (p *PageHeader) ClearPinnedFlag() error {
-	if p.Flags&PINNED_FLAG == 0 {
-		return util.ErrPageNotPinned
-	}
+func (p *PageHeader) ClearPinnedFlag() {
 	p.Flags &^= PINNED_FLAG
-	return nil
 }
 
 func (p *PageHeader) IsPinned() bool {
